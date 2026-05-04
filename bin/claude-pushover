@@ -1,0 +1,97 @@
+#!/bin/bash
+# claude-pushover - Send Claude Code conversation summary to Pushover
+# push over https://pushover.net/ is a web API to make a push notification into iPhone App
+# Configuration
+SECURITY_MODE=0  # 0=off (detailed messages), 1=on (simple message only)
+MAX_CHARS=800  # Maximum message length for Pushover
+DEBUG_LOG="$HOME/claude-pushover-debug.log"  # Debug log file
+# Function to extract message from hook JSON input
+get_hook_message() {
+    # Check security mode first
+    if [[ $SECURITY_MODE -eq 1 ]]; then
+        echo "claude code finish the job."
+        return
+    fi
+    local json_input=""
+    # Read JSON from stdin if available (Claude Code hooks pass data via stdin)
+    if [[ -t 0 ]]; then
+        echo "$(date): No stdin available" >> "$DEBUG_LOG"
+        echo "Claude Code task completed"
+        return
+    fi
+    # Read all stdin
+    json_input=$(cat)
+    # Debug: log the raw input
+    {
+        echo "=== $(date) ==="
+        echo "Raw input:"
+        echo "$json_input"
+        echo "---"
+    } >> "$DEBUG_LOG"
+    # Try to parse with jq if available
+    if command -v jq &>/dev/null; then
+        # Extract transcript path from hook JSON
+        local transcript_path=$(echo "$json_input" | jq -r '.transcript_path // empty' 2>/dev/null)
+        # Also try to find the most recent transcript file in case the hook provides an old one
+        local transcript_dir=$(dirname "$transcript_path" 2>/dev/null)
+        if [[ -d "$transcript_dir" ]]; then
+            local latest_transcript=$(ls -t "$transcript_dir"/*.jsonl 2>/dev/null | head -1)
+            if [[ -f "$latest_transcript" ]]; then
+                echo "Hook provided: $transcript_path" >> "$DEBUG_LOG"
+                echo "Latest found: $latest_transcript" >> "$DEBUG_LOG"
+                transcript_path="$latest_transcript"
+            fi
+        fi
+        echo "Using transcript path: $transcript_path" >> "$DEBUG_LOG"
+        if [[ -f "$transcript_path" ]]; then
+            # Extract last 5 lines of assistant text messages using tail and jq
+            local last_assistant=$(tail -50 "$transcript_path" | jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text' 2>/dev/null | tail -5)
+            # Extract last user text message only (excluding tool results)
+            # First get the last user JSON entry, then extract content to preserve multi-line messages
+            # Limit to last 5 lines for notification preview
+            local last_user=$(tail -50 "$transcript_path" | jq -c 'select(.type == "user") | select(.message.content | type == "string")' 2>/dev/null | tail -1 | jq -r '.message.content' 2>/dev/null | tail -5)
+            echo "Extracted assistant: ${last_assistant:0:100}..." >> "$DEBUG_LOG"
+            echo "Extracted user: ${last_user:0:100}..." >> "$DEBUG_LOG"
+            # Build the message
+            local message=""
+            if [[ -n "$last_user" && "$last_user" != "null" ]]; then
+                # Truncate user message if too long
+                if [[ ${#last_user} -gt 300 ]]; then
+                    message="User: ${last_user:0:300}..."
+                else
+                    message="User: $last_user"
+                fi
+            fi
+            if [[ -n "$last_assistant" && "$last_assistant" != "null" ]]; then
+                if [[ -n "$message" ]]; then
+                    message="$message
+Claude: $last_assistant"
+                else
+                    message="$last_assistant"
+                fi
+            fi
+            if [[ -n "$message" ]]; then
+                echo "Extracted message:" >> "$DEBUG_LOG"
+                echo "$message" >> "$DEBUG_LOG"
+                echo "$message"
+                return
+            else
+                echo "No message extracted from transcript" >> "$DEBUG_LOG"
+            fi
+        else
+            echo "Transcript file not found: $transcript_path" >> "$DEBUG_LOG"
+        fi
+    fi
+    # Final fallback
+    echo "Claude Code task completed"
+}
+# Get the message
+MESSAGE=$(get_hook_message)
+# Truncate if too long
+if [[ ${#MESSAGE} -gt $MAX_CHARS ]]; then
+    MESSAGE="${MESSAGE:0:$MAX_CHARS}..."
+fi
+# Send to pushover with emoji prefix
+pushover "🤖 Claude:
+$MESSAGE" >/dev/null 2>&1
+exit 0

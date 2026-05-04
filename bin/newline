@@ -1,0 +1,50 @@
+#!/bin/bash
+# newline - Detect line ending types in files (CR, LF, CRLF)
+
+if [[ $# -eq 0 ]]; then
+    echo "Usage: newline <file1> [file2] [...]"
+    exit 1
+fi
+
+for file in "$@"; do
+    if [[ ! -f "$file" ]]; then
+        echo "$file: file not found"
+        continue
+    fi
+
+    result=()
+
+    # Use od to detect actual bytes
+    # Check for CRLF (\r\n = 0d 0a)
+    has_crlf=$(od -An -tx1 "$file" | tr -d ' ' | grep -o '0d0a' | wc -l)
+
+    # Check for CR (\r = 0d)
+    has_cr=$(od -An -tx1 "$file" | tr -d ' ' | grep -o '0d' | wc -l)
+
+    # Check for LF (\n = 0a)
+    has_lf=$(od -An -tx1 "$file" | tr -d ' ' | grep -o '0a' | wc -l)
+
+    # CRLF is counted in both CR and LF counts, so we need to subtract
+    if [[ $has_crlf -gt 0 ]]; then
+        result+=("CRLF")
+    fi
+
+    # Standalone CR = total CR - CRLF count
+    standalone_cr=$((has_cr - has_crlf))
+    if [[ $standalone_cr -gt 0 ]]; then
+        result+=("CR")
+    fi
+
+    # Standalone LF = total LF - CRLF count
+    standalone_lf=$((has_lf - has_crlf))
+    if [[ $standalone_lf -gt 0 ]]; then
+        result+=("LF")
+    fi
+
+    # Display results
+    if [[ ${#result[@]} -eq 0 ]]; then
+        echo "$file: none"
+    else
+        echo "$file: $(IFS=', '; echo "${result[*]}")"
+    fi
+done
