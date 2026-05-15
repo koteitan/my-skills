@@ -32,6 +32,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 | スキル | 説明 |
 |--------|------|
 | [my-github-md-rule](skills/my-github-md-rule/) | GitHub 上で日英バイリンガルの markdown ドキュメントを生成するルール |
+| [sessiondb](skills/sessiondb/) | Claude Code セッション JSONL ログを SQLite + FTS5 で全文検索 |
 
 ## スラッシュコマンド一覧
 
@@ -48,6 +49,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 | [live-server-list](bin/live-server-list) | 動作中の `live-server` のポート一覧を表示 |
 | [mv-session](bin/mv-session) | ディレクトリと対応する `~/.claude/projects/` セッションを一緒に移動 |
 | [newline](bin/newline) | ファイルの改行コード（CR / LF / CRLF）を判定 |
+| [sessiondb](bin/sessiondb) | Claude Code セッション JSONL ログの SQLite + FTS5 インデックス構築と検索 |
 
 ## ライセンス
 

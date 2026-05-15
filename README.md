@@ -32,6 +32,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 | Skill | Description |
 |-------|-------------|
 | [my-github-md-rule](skills/my-github-md-rule/) | Rules for generating bilingual (EN/JA) markdown documents on GitHub |
+| [sessiondb](skills/sessiondb/) | SQLite + FTS5 full-text search over Claude Code session JSONL logs |
 
 ## Slash commands
 
@@ -48,6 +49,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 | [live-server-list](bin/live-server-list) | List ports of running `live-server` instances |
 | [mv-session](bin/mv-session) | Move a directory together with its `~/.claude/projects/` session dir |
 | [newline](bin/newline) | Detect CR / LF / CRLF line endings in files |
+| [sessiondb](bin/sessiondb) | Build and query a SQLite + FTS5 index over Claude Code session JSONL logs |
 
 ## License
 

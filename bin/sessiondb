@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""sessiondb - SQLite + FTS5 full-text index over Claude Code session JSONL."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sqlite3
+import sys
+import time
+from pathlib import Path
+from typing import Iterator
+
+DEFAULT_DB = Path(os.environ.get(
+    "SESSIONDB_PATH",
+    str(Path.home() / ".claude" / "sessiondb" / "sessions.db"),
+))
+PROJECTS_ROOT = Path.home() / ".claude" / "projects"
+TOOL_RESULT_MAX = 64 * 1024
+
+INGESTED_TYPES = {"user", "assistant", "system", "summary", "ai-title"}
+
+
+def derive_session_id(path: Path) -> str:
+    """Synthesize a collision-free session id from the JSONL path.
+
+    Main session : projects/<proj>/<uuid>.jsonl              -> "<uuid>"
+    Sub-agent    : projects/<proj>/<uuid>/subagents/<n>.jsonl-> "<uuid>/<n>"
+    """
+    try:
+        rel = path.relative_to(PROJECTS_ROOT)
+    except ValueError:
+        return path.stem
+    parts = rel.parts
+    if len(parts) == 2:
+        return parts[1].removesuffix(".jsonl")
+    if len(parts) >= 4 and parts[2] == "subagents":
+        return f"{parts[1]}/{parts[-1].removesuffix('.jsonl')}"
+    return rel.as_posix().removesuffix(".jsonl")
+
+
+def resume_id_for(session_id: str) -> str:
+    """The session id you can pass to `claude --resume`."""
+    return session_id.split("/", 1)[0]
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id  TEXT PRIMARY KEY,
+  project     TEXT NOT NULL,
+  cwd         TEXT,
+  source_path TEXT NOT NULL UNIQUE,
+  started_at  TEXT,
+  ended_at    TEXT,
+  msg_count   INTEGER NOT NULL DEFAULT 0,
+  total_bytes INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id          INTEGER PRIMARY KEY,
+  session_id  TEXT NOT NULL,
+  line_no     INTEGER NOT NULL,
+  ts          TEXT,
+  role        TEXT,
+  kind        TEXT,
+  tool        TEXT,
+  content     TEXT NOT NULL,
+  raw_len     INTEGER,
+  UNIQUE (session_id, line_no)
+);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_ts      ON messages(ts);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+  content,
+  content='messages',
+  content_rowid='id',
+  tokenize='trigram'
+);
+
+CREATE TABLE IF NOT EXISTS files (
+  source_path    TEXT PRIMARY KEY,
+  size           INTEGER NOT NULL,
+  mtime          REAL NOT NULL,
+  indexed_lines  INTEGER NOT NULL,
+  indexed_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"""
+
+
+def connect(db_path: Path) -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SCHEMA)
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key,value) VALUES('tokenizer','trigram')"
+    )
+    conn.commit()
+    return conn
+
+
+def flatten_tool_result(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict):
+                parts.append(b.get("text") or b.get("content") or "")
+            else:
+                parts.append(str(b))
+        return "\n".join(p for p in parts if p)
+    return str(content) if content is not None else ""
+
+
+def flatten_line(d: dict, include_thinking: bool) -> tuple[str, str, str, str | None]:
+    """Return (role, kind, content, tool_name) or ('','','',None) if skip."""
+    t = d.get("type")
+    if t == "summary":
+        return ("", "summary", d.get("summary") or "", None)
+    if t == "ai-title":
+        return ("", "ai-title", d.get("title") or d.get("aiTitle") or "", None)
+    if t not in ("user", "assistant", "system"):
+        return ("", "", "", None)
+
+    msg = d.get("message") or {}
+    role = msg.get("role") or t
+    content = msg.get("content")
+    if isinstance(content, str):
+        return (role, "text", content, None)
+    if not isinstance(content, list):
+        return (role, "text", "", None)
+
+    text_parts: list[str] = []
+    tool_name: str | None = None
+    kind = "text"
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        bt = b.get("type")
+        if bt == "text":
+            text_parts.append(b.get("text", ""))
+        elif bt == "thinking":
+            if include_thinking:
+                text_parts.append(b.get("thinking", ""))
+        elif bt == "tool_use":
+            name = b.get("name", "")
+            tool_name = tool_name or name
+            kind = "tool_use"
+            inp = b.get("input", {})
+            try:
+                inp_s = json.dumps(inp, ensure_ascii=False)
+            except (TypeError, ValueError):
+                inp_s = str(inp)
+            text_parts.append(f"[{name}] {inp_s}")
+        elif bt == "tool_result":
+            kind = "tool_result"
+            tr = flatten_tool_result(b.get("content"))
+            if len(tr.encode("utf-8")) > TOOL_RESULT_MAX:
+                tr = tr.encode("utf-8")[:TOOL_RESULT_MAX].decode("utf-8", "ignore")
+                tr += "\n[truncated]"
+            text_parts.append(tr)
+    return (role, kind, "\n".join(p for p in text_parts if p), tool_name)
+
+
+def iter_jsonl(path: Path, start_line: int) -> Iterator[tuple[int, dict]]:
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        for i, line in enumerate(f, 1):
+            if i < start_line:
+                continue
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield i, json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+
+def upsert_session(conn, session_id, project, source_path):
+    conn.execute(
+        """INSERT INTO sessions(session_id, project, source_path)
+           VALUES(?,?,?)
+           ON CONFLICT(session_id) DO UPDATE SET project=excluded.project""",
+        (session_id, project, source_path),
+    )
+
+
+def ingest_file(conn, path: Path, start_line: int, include_thinking: bool) -> int:
+    session_id = derive_session_id(path)
+    try:
+        project = path.relative_to(PROJECTS_ROOT).parts[0]
+    except ValueError:
+        project = path.parent.name
+    source_path = str(path.resolve())
+    upsert_session(conn, session_id, project, source_path)
+
+    inserted = 0
+    last_ts = None
+    cwd = None
+    last_line = start_line - 1
+
+    for line_no, d in iter_jsonl(path, start_line):
+        last_line = line_no
+        role, kind, content, tool = flatten_line(d, include_thinking)
+        if not kind or not content.strip():
+            continue
+        ts = d.get("timestamp")
+        last_ts = ts or last_ts
+        cwd = cwd or d.get("cwd")
+        raw_len = len(json.dumps(d, ensure_ascii=False).encode("utf-8"))
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO messages
+               (session_id, line_no, ts, role, kind, tool, content, raw_len)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (session_id, line_no, ts, role, kind, tool, content, raw_len),
+        )
+        if cur.rowcount:
+            inserted += 1
+            conn.execute(
+                "INSERT INTO messages_fts(rowid, content) VALUES (?, ?)",
+                (cur.lastrowid, content),
+            )
+
+    if cwd or last_ts:
+        conn.execute(
+            """UPDATE sessions
+               SET cwd = COALESCE(?, cwd),
+                   ended_at = COALESCE(?, ended_at),
+                   started_at = COALESCE(
+                     (SELECT MIN(ts) FROM messages WHERE session_id=?), started_at),
+                   msg_count = (SELECT COUNT(*) FROM messages WHERE session_id=?),
+                   total_bytes = (SELECT COALESCE(SUM(raw_len),0) FROM messages WHERE session_id=?)
+             WHERE session_id=?""",
+            (cwd, last_ts, session_id, session_id, session_id, session_id),
+        )
+    return last_line
+
+
+def purge_file(conn, source_path: str) -> None:
+    session_id = derive_session_id(Path(source_path))
+    rows = list(conn.execute(
+        "SELECT id FROM messages WHERE session_id=?", (session_id,)
+    ))
+    for r in rows:
+        conn.execute("INSERT INTO messages_fts(messages_fts, rowid, content) "
+                     "VALUES('delete', ?, (SELECT content FROM messages WHERE id=?))",
+                     (r["id"], r["id"]))
+    conn.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
+    conn.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
+    conn.execute("DELETE FROM files WHERE source_path=?", (source_path,))
+
+
+def cmd_index(args) -> int:
+    conn = connect(args.db)
+    if args.full:
+        conn.executescript(
+            "DROP TABLE IF EXISTS messages_fts;"
+            "DROP TABLE IF EXISTS messages;"
+            "DROP TABLE IF EXISTS sessions;"
+            "DROP TABLE IF EXISTS files;"
+        )
+        conn.commit()
+        conn = connect(args.db)
+
+    seen_paths: set[str] = set()
+    t0 = time.time()
+    new_files = appended = skipped = purged = 0
+    new_lines = 0
+
+    for path in sorted(PROJECTS_ROOT.rglob("*.jsonl")):
+        if not path.is_file():
+            continue
+        sp = str(path.resolve())
+        seen_paths.add(sp)
+        st = path.stat()
+        row = conn.execute(
+            "SELECT size, indexed_lines FROM files WHERE source_path=?", (sp,)
+        ).fetchone()
+
+        if row is None:
+            start = 1
+            new_files += 1
+        elif st.st_size == row["size"]:
+            skipped += 1
+            continue
+        elif st.st_size > row["size"]:
+            start = row["indexed_lines"] + 1
+            appended += 1
+        else:
+            purge_file(conn, sp)
+            start = 1
+            purged += 1
+
+        try:
+            with conn:
+                last_line = ingest_file(conn, path, start, args.include_thinking)
+                added = last_line - start + 1 if last_line >= start else 0
+                new_lines += max(0, added)
+                conn.execute(
+                    """INSERT INTO files(source_path,size,mtime,indexed_lines,indexed_at)
+                       VALUES(?,?,?,?,?)
+                       ON CONFLICT(source_path) DO UPDATE SET
+                         size=excluded.size, mtime=excluded.mtime,
+                         indexed_lines=excluded.indexed_lines,
+                         indexed_at=excluded.indexed_at""",
+                    (sp, st.st_size, st.st_mtime,
+                     max(last_line, row["indexed_lines"] if row else 0),
+                     time.strftime("%Y-%m-%dT%H:%M:%S")),
+                )
+        except Exception as e:
+            print(f"  ! 取り込み失敗 {path}: {e}", file=sys.stderr)
+
+    deleted = 0
+    for r in conn.execute("SELECT source_path FROM files"):
+        if r["source_path"] not in seen_paths:
+            purge_file(conn, r["source_path"])
+            deleted += 1
+    conn.commit()
+
+    dt = time.time() - t0
+    print(
+        f"完了 ({dt:.1f}s): 新規 {new_files} / 追記 {appended} / "
+        f"スキップ {skipped} / 再構築 {purged} / 削除 {deleted} / "
+        f"追加メッセージ {new_lines}"
+    )
+    return 0
+
+
+def cmd_search(args) -> int:
+    conn = connect(args.db)
+    sql = (
+        "SELECT m.session_id, m.line_no, m.ts, m.role, s.source_path, s.project, "
+        "snippet(messages_fts, 0, '<b>', '</b>', '…', 32) AS snippet, "
+        "bm25(messages_fts) AS score "
+        "FROM messages_fts "
+        "JOIN messages m ON m.id = messages_fts.rowid "
+        "JOIN sessions s ON s.session_id = m.session_id "
+        "WHERE messages_fts MATCH ? "
+    )
+    params: list = [args.query]
+    if args.project:
+        sql += "AND s.project = ? "
+        params.append(args.project)
+    if args.role:
+        sql += "AND m.role = ? "
+        params.append(args.role)
+    sql += "ORDER BY score LIMIT ?"
+    params.append(args.limit)
+
+    t0 = time.time()
+    rows = list(conn.execute(sql, params))
+    dt_ms = int((time.time() - t0) * 1000)
+
+    if args.format == "table":
+        if not rows:
+            print("（該当なし）")
+            return 0
+        for r in rows:
+            ts = (r["ts"] or "")[:19].replace("T", " ")
+            snip = (r["snippet"] or "").replace("\n", " ")[:120]
+            print(f"{ts}\t{r['session_id'][:8]}\t{r['project']}\t{snip}")
+        print(f"# {len(rows)} 件 / {dt_ms} ms", file=sys.stderr)
+        return 0
+
+    for r in rows:
+        print(json.dumps({
+            "session_id": r["session_id"],
+            "project": r["project"],
+            "ts": r["ts"],
+            "role": r["role"],
+            "snippet": r["snippet"],
+            "score": r["score"],
+            "source_path": r["source_path"],
+            "line_no": r["line_no"],
+            "resume": f"claude --resume {resume_id_for(r['session_id'])}",
+        }, ensure_ascii=False))
+    print(json.dumps({"_summary": {
+        "hits": len(rows), "shown": len(rows),
+        "query": args.query, "ms": dt_ms,
+    }}, ensure_ascii=False))
+    return 0
+
+
+def cmd_stats(args) -> int:
+    conn = connect(args.db)
+    total_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    total_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    total_bytes = conn.execute(
+        "SELECT COALESCE(SUM(total_bytes),0) FROM sessions"
+    ).fetchone()[0]
+    print(f"セッション数: {total_sessions}")
+    print(f"メッセージ数: {total_messages}")
+    print(f"総バイト数:   {total_bytes/1024/1024:.1f} MB")
+    print("\nプロジェクト別 (上位 10):")
+    for r in conn.execute(
+        "SELECT project, COUNT(*) AS n, SUM(total_bytes) AS b "
+        "FROM sessions GROUP BY project ORDER BY n DESC LIMIT 10"
+    ):
+        print(f"  {r['n']:5d}  {(r['b'] or 0)/1024/1024:7.1f} MB  {r['project']}")
+    print("\n最大セッション (上位 5):")
+    for r in conn.execute(
+        "SELECT session_id, project, total_bytes "
+        "FROM sessions ORDER BY total_bytes DESC LIMIT 5"
+    ):
+        print(f"  {r['total_bytes']/1024/1024:7.1f} MB  {r['session_id'][:8]}  {r['project']}")
+    return 0
+
+
+def cmd_show(args) -> int:
+    conn = connect(args.db)
+    for r in conn.execute(
+        "SELECT line_no, ts, role, kind, tool, content "
+        "FROM messages WHERE session_id=? ORDER BY line_no",
+        (args.session_id,),
+    ):
+        ts = (r["ts"] or "")[:19].replace("T", " ")
+        head = f"[{r['line_no']:4d}] {ts} {r['role'] or '-'}/{r['kind']}"
+        if r["tool"]:
+            head += f" {r['tool']}"
+        print(head)
+        body = r["content"]
+        if len(body) > 1000 and not args.full:
+            body = body[:1000] + f"\n  … ({len(body)} chars total; --full で全表示)"
+        for line in body.splitlines():
+            print(f"    {line}")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="sessiondb")
+    p.add_argument("--db", type=Path, default=DEFAULT_DB,
+                   help=f"SQLite path (default: {DEFAULT_DB})")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    p_index = sub.add_parser("index", help="増分または全インデックス")
+    p_index.add_argument("--full", action="store_true",
+                         help="既存テーブルを drop してゼロから再構築")
+    p_index.add_argument("--include-thinking", action="store_true",
+                         help="thinking ブロックも索引に含める")
+    p_index.set_defaults(func=cmd_index)
+
+    p_search = sub.add_parser("search", help="全文検索")
+    p_search.add_argument("query")
+    p_search.add_argument("--project")
+    p_search.add_argument("--role", choices=["user", "assistant", "system"])
+    p_search.add_argument("--limit", type=int, default=20)
+    p_search.add_argument("--format", choices=["jsonl", "table"], default="jsonl")
+    p_search.set_defaults(func=cmd_search)
+
+    p_stats = sub.add_parser("stats", help="統計表示")
+    p_stats.set_defaults(func=cmd_stats)
+
+    p_show = sub.add_parser("show", help="セッションを時系列で出力")
+    p_show.add_argument("session_id")
+    p_show.add_argument("--full", action="store_true",
+                        help="長いメッセージも切り詰めずに表示")
+    p_show.set_defaults(func=cmd_show)
+
+    args = p.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
