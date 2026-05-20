@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""get-context - print the current Claude Code session's context-window usage %.
+
+How it works:
+  1. Locate the current session JSONL strictly via $CLAUDE_CODE_SESSION_ID
+     (set by Claude Code): ~/.claude/projects/**/<session-id>.jsonl.
+     If the variable is unset/empty, fail with an error rather than guessing —
+     picking the wrong session is worse than failing.
+  2. Read the last `usage` field (token metadata auto-attached to each
+     assistant message). The latest entry reflects the whole conversation,
+     because the prior context is re-read from cache every turn.
+  3. context_tokens = input + cache_creation + cache_read + output
+     pct = context_tokens / CONTEXT_WINDOW * 100
+  4. Print the percentage to stdout.
+
+Env overrides:
+  CONTEXT_WINDOW   context window size in tokens (default 1000000)
+  GET_CONTEXT_RAW  if set to "1", also print the raw token count
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+PROJECTS_ROOT = Path.home() / ".claude" / "projects"
+CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "1000000"))
+
+
+def find_session_jsonl() -> Path:
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        sys.exit(
+            "error: CLAUDE_CODE_SESSION_ID is not set; cannot identify the "
+            "current session. (Refusing to guess — picking the wrong session "
+            "would be worse than failing.)"
+        )
+    matches = list(PROJECTS_ROOT.glob(f"**/{sid}.jsonl"))
+    if not matches:
+        sys.exit(f"error: no session JSONL found for CLAUDE_CODE_SESSION_ID={sid}")
+    return matches[0]
+
+
+def last_usage(path: Path) -> dict | None:
+    found = None
+    with path.open() as f:
+        for line in f:
+            if '"usage"' not in line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = obj.get("message", {})
+            usage = msg.get("usage") if isinstance(msg, dict) else None
+            if not usage:
+                usage = obj.get("usage")
+            if isinstance(usage, dict) and "input_tokens" in usage:
+                found = usage
+    return found
+
+
+def main() -> int:
+    path = find_session_jsonl()
+
+    usage = last_usage(path)
+    if usage is None:
+        print("error: no usage field found in session log", file=sys.stderr)
+        return 1
+
+    ctx = (
+        usage.get("input_tokens", 0)
+        + usage.get("cache_creation_input_tokens", 0)
+        + usage.get("cache_read_input_tokens", 0)
+        + usage.get("output_tokens", 0)
+    )
+    pct = ctx / CONTEXT_WINDOW * 100
+
+    if os.environ.get("GET_CONTEXT_RAW") == "1":
+        print(f"{pct:.1f}% ({ctx}/{CONTEXT_WINDOW} tokens)")
+    else:
+        print(f"{pct:.1f}%")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
