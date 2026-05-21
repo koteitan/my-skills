@@ -31,6 +31,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 
 | Skill | Description |
 |-------|-------------|
+| [compact-unfreeze](skills/compact-unfreeze/) | Work around the Remote Control + `/compact` frozen-input bug by arming a background Monitor to flush the stuck queue |
 | [my-github-md-rule](skills/my-github-md-rule/) | Rules for generating bilingual (EN/JA) markdown documents on GitHub |
 | [sessiondb](skills/sessiondb/) | SQLite + FTS5 full-text search over Claude Code session JSONL logs |
 

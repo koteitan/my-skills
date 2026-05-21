@@ -31,6 +31,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 
 | スキル | 説明 |
 |--------|------|
+| [compact-unfreeze](skills/compact-unfreeze/) | Remote Control ＋ `/compact` の入力フリーズバグを、バックグラウンド Monitor の発火でキューをフラッシュして回避 |
 | [my-github-md-rule](skills/my-github-md-rule/) | GitHub 上で日英バイリンガルの markdown ドキュメントを生成するルール |
 | [sessiondb](skills/sessiondb/) | Claude Code セッション JSONL ログを SQLite + FTS5 で全文検索 |
 
