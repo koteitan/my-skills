@@ -26,11 +26,15 @@ Do **not** invoke for lookups inside the current session — use `Read`/`Grep`.
 ```
 sessiondb index                       # incremental rebuild
 sessiondb index --full                # drop and rebuild from scratch
-sessiondb search "<query>" [--project P] [--role R] [--limit N]
-sessiondb search "<query>" --format=table
+sessiondb search "<query>" --format=jsonl [--project P] [--role R] [--limit N]
+sessiondb search                      # query 省略 = セッション一覧 (新しい順)
 sessiondb stats
-sessiondb show <session_id>
+sessiondb show <session_id> [--line L] [--context K]
 ```
+
+**重要**: エージェントが呼ぶときは必ず `--format=jsonl` を付ける。CLI の
+既定は `--format=table` (人間向け TSV) なので、明示しないと下記の
+JSON Lines 形式は得られない。
 
 If `bin/sessiondb` is not installed, fall back to invoking `sqlite3` directly:
 
@@ -53,7 +57,7 @@ JSON Lines, one hit per line, followed by a summary line:
 {"_summary":{"hits":17,"shown":10,"query":"…","ms":34}}
 ```
 
-`--format=table` switches to TSV for human reading.
+`--format=table` (CLI 既定) is TSV for human reading; do not parse from agent.
 
 ## Build / schema / ingest details
 

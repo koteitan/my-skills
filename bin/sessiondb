@@ -332,11 +332,107 @@ def cmd_index(args) -> int:
     return 0
 
 
+def cmd_list_sessions(conn, args) -> int:
+    ignored = []
+    if args.role:
+        ignored.append("--role")
+    if args.context != 5:
+        ignored.append("--context")
+    if args.highlight:
+        ignored.append("--highlight")
+    if args.snippet != 96:
+        ignored.append("--snippet")
+    if args.sort == "score":
+        pass
+    if ignored:
+        print(f"# 警告: query 省略時 (セッション一覧モード) では {', '.join(ignored)} "
+              "は無視されます", file=sys.stderr)
+
+    sql = ("SELECT session_id, project, source_path, "
+           "COALESCE(ended_at, started_at) AS ts, "
+           "msg_count, total_bytes "
+           "FROM sessions WHERE 1=1 ")
+    params: list = []
+    if args.project:
+        sql += "AND project LIKE ? "
+        params.append(f"%{args.project}%")
+    sort = "ASC" if args.sort == "date-asc" else "DESC"
+    sql += f"ORDER BY COALESCE(ended_at, started_at) {sort} LIMIT ?"
+    params.append(args.limit)
+
+    t0 = time.time()
+    rows = list(conn.execute(sql, params))
+    dt_ms = int((time.time() - t0) * 1000)
+
+    if not rows:
+        print("（該当セッションなし）")
+        return 0
+
+    if args.interactive or args.format == "table":
+        idx_width = len(str(len(rows)))
+        for i, r in enumerate(rows, 1):
+            ts = (r["ts"] or "")[:19].replace("T", " ")
+            size_mb = (r["total_bytes"] or 0) / 1024 / 1024
+            prefix = f"{i:>{idx_width}}: " if args.interactive else ""
+            print(f"{prefix}{ts}\t{r['session_id']}\t"
+                  f"msgs:{r['msg_count']}\t{size_mb:6.1f}MB\t{r['project']}")
+        print(f"# {len(rows)} sessions / {dt_ms} ms", file=sys.stderr)
+
+        if not args.interactive:
+            print("# セッションを開く: sessiondb show <session_id>", file=sys.stderr)
+            return 0
+
+        while True:
+            try:
+                s = input("\n> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 0
+            if s == "" or s in ("q", "quit", "exit"):
+                return 0
+            if s in ("a", "all", "*"):
+                indices = list(range(1, len(rows) + 1))
+            else:
+                indices = parse_indices(s, len(rows))
+            if indices is None:
+                print(f"入力エラー。例: 2 / 1,3,5 / 1-8 / all  "
+                      f"(範囲 1-{len(rows)})", file=sys.stderr)
+                continue
+            for n, k in enumerate(indices):
+                r = rows[k - 1]
+                if n == 0:
+                    print()
+                else:
+                    print("\n" + "─" * 70)
+                print(f"### Session {k}: {r['session_id']} "
+                      f"({r['msg_count']} msgs)\n")
+                render_messages(conn, r["session_id"],
+                                line=None, context=0, full=False)
+        return 0
+
+    for r in rows:
+        print(json.dumps({
+            "session_id": r["session_id"],
+            "project": r["project"],
+            "ts": r["ts"],
+            "msg_count": r["msg_count"],
+            "total_bytes": r["total_bytes"],
+            "source_path": r["source_path"],
+            "resume": f"claude --resume {resume_id_for(r['session_id'])}",
+        }, ensure_ascii=False))
+    print(json.dumps({"_summary": {
+        "sessions": len(rows), "ms": dt_ms,
+    }}, ensure_ascii=False))
+    return 0
+
+
 def cmd_search(args) -> int:
     conn = connect(args.db)
+    if args.query is None or args.query.strip() == "":
+        return cmd_list_sessions(conn, args)
     sql = (
         "SELECT m.session_id, m.line_no, m.ts, m.role, s.source_path, s.project, "
-        "snippet(messages_fts, 0, '<b>', '</b>', '…', 32) AS snippet, "
+        f"snippet(messages_fts, 0, '<b>', '</b>', '…', {int(args.snippet)}) AS snippet, "
         "bm25(messages_fts) AS score "
         "FROM messages_fts "
         "JOIN messages m ON m.id = messages_fts.rowid "
@@ -345,28 +441,74 @@ def cmd_search(args) -> int:
     )
     params: list = [args.query]
     if args.project:
-        sql += "AND s.project = ? "
-        params.append(args.project)
+        sql += "AND s.project LIKE ? "
+        params.append(f"%{args.project}%")
     if args.role:
         sql += "AND m.role = ? "
         params.append(args.role)
-    sql += "ORDER BY score LIMIT ?"
+    if args.sort == "date":
+        sql += "ORDER BY m.ts DESC, score "
+    elif args.sort == "date-asc":
+        sql += "ORDER BY m.ts ASC, score "
+    else:
+        sql += "ORDER BY score "
+    sql += "LIMIT ?"
     params.append(args.limit)
 
     t0 = time.time()
     rows = list(conn.execute(sql, params))
     dt_ms = int((time.time() - t0) * 1000)
 
-    if args.format == "table":
+    def clean(s: str | None) -> str:
+        if not s:
+            return ""
+        s = s.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+        if not args.highlight:
+            s = s.replace("<b>", "").replace("</b>", "")
+        return s
+
+    if args.interactive or args.format == "table":
         if not rows:
             print("（該当なし）")
             return 0
-        for r in rows:
+        idx_width = len(str(len(rows)))
+        for i, r in enumerate(rows, 1):
             ts = (r["ts"] or "")[:19].replace("T", " ")
-            snip = (r["snippet"] or "").replace("\n", " ")[:120]
-            print(f"{ts}\t{r['session_id'][:8]}\t{r['project']}\t{snip}")
+            prefix = f"{i:>{idx_width}}: " if args.interactive else ""
+            print(f"{prefix}{ts}\t{r['session_id']}\tL{r['line_no']}\t"
+                  f"{r['project']}\t{clean(r['snippet'])}")
         print(f"# {len(rows)} 件 / {dt_ms} ms", file=sys.stderr)
-        return 0
+        if not args.interactive:
+            print("# 続きを見る: sessiondb show <session_id> --line <L> --context 5",
+                  file=sys.stderr)
+            return 0
+
+        # 対話ループ
+        while True:
+            try:
+                s = input("\n> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 0
+            if s == "" or s in ("q", "quit", "exit"):
+                return 0
+            if s in ("a", "all", "*"):
+                indices = list(range(1, len(rows) + 1))
+            else:
+                indices = parse_indices(s, len(rows))
+            if indices is None:
+                print(f"入力エラー。例: 2 / 1,3,5 / 1-8 / 1,3-5,7 / all  "
+                      f"(範囲 1-{len(rows)})", file=sys.stderr)
+                continue
+            for n, k in enumerate(indices):
+                r = rows[k - 1]
+                if n == 0:
+                    print()
+                else:
+                    print("\n" + "─" * 70)
+                print(f"### Hit {k}: {r['session_id']} L{r['line_no']}\n")
+                render_messages(conn, r["session_id"], r["line_no"],
+                                args.context, full=False)
 
     for r in rows:
         print(json.dumps({
@@ -374,7 +516,7 @@ def cmd_search(args) -> int:
             "project": r["project"],
             "ts": r["ts"],
             "role": r["role"],
-            "snippet": r["snippet"],
+            "snippet": clean(r["snippet"]),
             "score": r["score"],
             "source_path": r["source_path"],
             "line_no": r["line_no"],
@@ -412,57 +554,212 @@ def cmd_stats(args) -> int:
     return 0
 
 
-def cmd_show(args) -> int:
-    conn = connect(args.db)
-    for r in conn.execute(
-        "SELECT line_no, ts, role, kind, tool, content "
-        "FROM messages WHERE session_id=? ORDER BY line_no",
-        (args.session_id,),
-    ):
+def resolve_session_id(conn, given: str) -> str | None:
+    """Accept either a full session_id or a unique prefix (>= 4 chars).
+
+    When the prefix matches both a main session and its sub-agents, the main
+    session (no slash) wins.
+    """
+    row = conn.execute(
+        "SELECT session_id FROM sessions WHERE session_id=?", (given,)
+    ).fetchone()
+    if row:
+        return row["session_id"]
+    if len(given) < 4:
+        return None
+    matches = [r["session_id"] for r in conn.execute(
+        "SELECT session_id FROM sessions WHERE session_id LIKE ? LIMIT 20",
+        (given + "%",),
+    )]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    main_only = [m for m in matches if "/" not in m]
+    if len(main_only) == 1:
+        return main_only[0]
+    print("曖昧なプレフィックス。候補:", file=sys.stderr)
+    for m in matches[:10]:
+        print(f"  {m}", file=sys.stderr)
+    return None
+
+
+def parse_indices(s: str, max_idx: int) -> list[int] | None:
+    """Parse selection like '1', '1,3,5', '1-8', '1,3-5,7'.
+    Returns None on any malformed token or out-of-range value.
+    """
+    out: list[int] = []
+    for part in s.replace(" ", "").split(","):
+        if not part:
+            continue
+        if "-" in part:
+            a, _, b = part.partition("-")
+            try:
+                lo, hi = int(a), int(b)
+            except ValueError:
+                return None
+            if lo > hi:
+                lo, hi = hi, lo
+            for k in range(lo, hi + 1):
+                if not 1 <= k <= max_idx:
+                    return None
+                out.append(k)
+        else:
+            try:
+                k = int(part)
+            except ValueError:
+                return None
+            if not 1 <= k <= max_idx:
+                return None
+            out.append(k)
+    return out or None
+
+
+def render_messages(conn, session_id: str, line: int | None,
+                    context: int, full: bool) -> int:
+    """Print messages for a session, optionally a window around `line`."""
+    sql = ("SELECT line_no, ts, role, kind, tool, content "
+           "FROM messages WHERE session_id=?")
+    params: list = [session_id]
+    if line is not None:
+        lo = max(1, line - context)
+        hi = line + context
+        sql += " AND line_no BETWEEN ? AND ?"
+        params += [lo, hi]
+    sql += " ORDER BY line_no"
+    rows = list(conn.execute(sql, params))
+    if not rows:
+        print("（該当なし: line_no を確認）", file=sys.stderr)
+        return 1
+    for r in rows:
         ts = (r["ts"] or "")[:19].replace("T", " ")
-        head = f"[{r['line_no']:4d}] {ts} {r['role'] or '-'}/{r['kind']}"
+        marker = " <==" if line == r["line_no"] else ""
+        head = f"[{r['line_no']:4d}] {ts} {r['role'] or '-'}/{r['kind']}{marker}"
         if r["tool"]:
             head += f" {r['tool']}"
         print(head)
         body = r["content"]
-        if len(body) > 1000 and not args.full:
+        if len(body) > 1000 and not full:
             body = body[:1000] + f"\n  … ({len(body)} chars total; --full で全表示)"
-        for line in body.splitlines():
-            print(f"    {line}")
+        for ln in body.splitlines():
+            print(f"    {ln}")
     return 0
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(prog="sessiondb")
-    p.add_argument("--db", type=Path, default=DEFAULT_DB,
-                   help=f"SQLite path (default: {DEFAULT_DB})")
-    sub = p.add_subparsers(dest="cmd", required=True)
+def cmd_show(args) -> int:
+    conn = connect(args.db)
+    resolved = resolve_session_id(conn, args.session_id)
+    if resolved is None:
+        print(f"（session_id が見つかりません: {args.session_id}）", file=sys.stderr)
+        return 1
+    if resolved != args.session_id:
+        print(f"# {args.session_id} → {resolved}", file=sys.stderr)
+    return render_messages(conn, resolved, args.line, args.context, args.full)
 
-    p_index = sub.add_parser("index", help="増分または全インデックス")
+
+def build_parser() -> tuple[argparse.ArgumentParser, argparse._SubParsersAction]:
+    p = argparse.ArgumentParser(
+        prog="sessiondb",
+        description="Claude Code のセッション JSONL を SQLite + FTS5 で全文検索",
+        epilog="サブコマンドの詳細は `sessiondb help <subcommand>`",
+    )
+    p.add_argument("--db", type=Path, default=DEFAULT_DB,
+                   help=f"SQLite ファイルのパス (default: {DEFAULT_DB}; "
+                        "環境変数 SESSIONDB_PATH でも指定可)")
+    sub = p.add_subparsers(dest="cmd", required=True,
+                           metavar="{index,search,stats,show,help}")
+
+    p_index = sub.add_parser(
+        "index", help="増分または全インデックス",
+        description="~/.claude/projects/ 配下の JSONL を走査してインデックス更新",
+    )
     p_index.add_argument("--full", action="store_true",
                          help="既存テーブルを drop してゼロから再構築")
     p_index.add_argument("--include-thinking", action="store_true",
-                         help="thinking ブロックも索引に含める")
+                         help="thinking ブロックも索引に含める (既定: 含めない)")
     p_index.set_defaults(func=cmd_index)
 
-    p_search = sub.add_parser("search", help="全文検索")
-    p_search.add_argument("query")
-    p_search.add_argument("--project")
-    p_search.add_argument("--role", choices=["user", "assistant", "system"])
-    p_search.add_argument("--limit", type=int, default=20)
-    p_search.add_argument("--format", choices=["jsonl", "table"], default="jsonl")
+    p_search = sub.add_parser(
+        "search", help="全文検索",
+        description="FTS5 trigram で全文検索。query は 3 文字以上推奨",
+    )
+    p_search.add_argument("query", nargs="?", default=None,
+                          help="検索クエリ (FTS5 MATCH 構文)。"
+                               "省略時はセッション一覧モード (新しい順)")
+    p_search.add_argument("--project",
+                          help="プロジェクト名で絞り込み (部分一致 LIKE)")
+    p_search.add_argument("--role", choices=["user", "assistant", "system"],
+                          help="メッセージ role で絞り込み")
+    p_search.add_argument("--limit", type=int, default=20,
+                          help="返す件数 (default: 20)")
+    p_search.add_argument("--snippet", type=int, default=96,
+                          help="snippet のトークン幅 (default: 96, "
+                               "trigram では概ね同数の文字数になる)")
+    p_search.add_argument("--sort", choices=["score", "date", "date-asc"],
+                          default="score",
+                          help="並び順: score=関連度(既定) / date=新しい順 / "
+                               "date-asc=古い順")
+    p_search.add_argument("--highlight", action="store_true",
+                          help="ヒット箇所を <b>...</b> で囲んで表示 "
+                               "(既定: タグ無し)")
+    p_search.add_argument("--format", choices=["jsonl", "table"], default="table",
+                          help="出力形式 (default: table, 人間向け; "
+                               "jsonl はエージェント向け)")
+    p_search.add_argument("-i", "--interactive", action="store_true",
+                          help="番号付きで一覧表示し、番号入力で show を呼ぶ "
+                               "(--format は無視して table 風)")
+    p_search.add_argument("--context", type=int, default=5,
+                          help="--interactive 時、選択ヒットの前後何メッセージを "
+                               "表示するか (default: 5)")
     p_search.set_defaults(func=cmd_search)
 
-    p_stats = sub.add_parser("stats", help="統計表示")
+    p_stats = sub.add_parser(
+        "stats", help="統計表示",
+        description="総セッション数・プロジェクト別件数・最大セッションを表示",
+    )
     p_stats.set_defaults(func=cmd_stats)
 
-    p_show = sub.add_parser("show", help="セッションを時系列で出力")
-    p_show.add_argument("session_id")
+    p_show = sub.add_parser(
+        "show", help="セッションを時系列で出力",
+        description="指定セッションの全メッセージを line_no 順に表示",
+    )
+    p_show.add_argument("session_id",
+                        help="UUID または曖昧でないプレフィックス (4文字以上)。"
+                             "サブエージェントは <parent_uuid>/agent-XXX")
+    p_show.add_argument("--line", type=int,
+                        help="特定の line_no を中心に表示 (search の L 列の数値)")
+    p_show.add_argument("--context", type=int, default=5,
+                        help="--line 指定時、前後 N メッセージを表示 (default: 5)")
     p_show.add_argument("--full", action="store_true",
                         help="長いメッセージも切り詰めずに表示")
     p_show.set_defaults(func=cmd_show)
 
-    args = p.parse_args()
+    p_help = sub.add_parser(
+        "help", help="全コマンドの詳細ヘルプを表示",
+        description="`sessiondb help` で全体、`sessiondb help <cmd>` で個別",
+    )
+    p_help.add_argument("topic", nargs="?",
+                        help="ヘルプを表示するサブコマンド名 (省略時は全表示)")
+    p_help.set_defaults(func=None)
+    return p, sub
+
+
+def main() -> int:
+    argv = list(sys.argv[1:])
+    # `help` を `--help` の別名として任意位置で受け付ける
+    if argv:
+        if argv[0] == "help":
+            argv = [argv[1], "--help"] + argv[2:] if len(argv) > 1 else []
+        elif len(argv) >= 2 and argv[1] == "help":
+            argv = [argv[0], "--help"]
+
+    p, _sub = build_parser()
+    # 引数ゼロ / `help` / `--help` 単独ではトップレベルだけを出す
+    if not argv or argv == ["--help"] or argv == ["-h"]:
+        p.print_help()
+        return 0
+
+    args = p.parse_args(argv)
     return args.func(args)
 
 
