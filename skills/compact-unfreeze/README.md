@@ -9,9 +9,11 @@ without tmux or any local keystroke.
 ## The bug
 
 When you run `/compact` **from the remote (mobile) client**, the next remote
-input freezes: it shows as `× <text>`, queued but never delivered. Local input
-always works; only the remote path stalls — it stays stuck until a local TTY
-event wakes the input loop.
+input can freeze: it shows as `× <text>`, queued but never delivered. This is
+**intermittent** — it doesn't happen every time. Local input always works; only
+the remote path stalls — it stays stuck until a local TTY event wakes the input
+loop. Observed across days: it froze on May 20, did not freeze on May 21, and
+recurred on May 22→23.
 
 ## The workaround
 
