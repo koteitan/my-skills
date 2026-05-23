@@ -6,6 +6,7 @@ description: When the user requests to generate markdown document on github
 # Rules for GitHub Markdown Documents
 
 - Each markdown consists of a pair of `*.md` in English and `*-ja.md` in Japanese.
+  - Exception: `SKILL.md` does not need an EN/JA pair. It is read by the agent (English only) and is not user-facing documentation.
 - Each markdown file must have the following link at the top of the file:
 
 ```
