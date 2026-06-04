@@ -32,6 +32,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 | Skill | Description |
 |-------|-------------|
 | [compact-unfreeze](skills/compact-unfreeze/) | Work around the Remote Control + `/compact` frozen-input bug by arming a background Monitor to flush the stuck queue |
+| [autonomy-stat](skills/autonomy-stat/) | Measure an agent's per-turn self-running time from a session JSONL and render it as an interactive HTML chart (model-work vs tool-wait) |
 | [my-github-md-rule](skills/my-github-md-rule/) | Rules for generating bilingual (EN/JA) markdown documents on GitHub |
 | [sessiondb](skills/sessiondb/) | SQLite + FTS5 full-text search over Claude Code session JSONL logs |
 
