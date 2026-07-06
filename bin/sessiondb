@@ -554,6 +554,60 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def cmd_size(args) -> int:
+    db = Path(args.db)
+    if not db.exists():
+        print(f"（DB が存在しません: {db}）", file=sys.stderr)
+        return 1
+
+    def human(n: int) -> str:
+        f = float(n)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if f < 1024 or unit == "TB":
+                return f"{f:.1f} {unit}" if unit != "B" else f"{int(f)} B"
+            f /= 1024
+        return f"{f:.1f} TB"
+
+    # 本体 + WAL/SHM サイドカーのディスク使用量
+    main = db.stat().st_size
+    wal = (db.parent / (db.name + "-wal"))
+    shm = (db.parent / (db.name + "-shm"))
+    wal_sz = wal.stat().st_size if wal.exists() else 0
+    shm_sz = shm.stat().st_size if shm.exists() else 0
+    total = main + wal_sz + shm_sz
+
+    conn = connect(args.db)
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+    freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    free_bytes = freelist * page_size
+
+    if args.format == "json":
+        print(json.dumps({
+            "db_path": str(db),
+            "file_bytes": main,
+            "wal_bytes": wal_sz,
+            "shm_bytes": shm_sz,
+            "total_bytes": total,
+            "page_size": page_size,
+            "page_count": page_count,
+            "freelist_count": freelist,
+            "free_bytes": free_bytes,
+        }, ensure_ascii=False))
+        return 0
+
+    print(f"DB:           {db}")
+    print(f"本体:         {human(main)}")
+    if wal_sz:
+        print(f"WAL:          {human(wal_sz)}")
+    if shm_sz:
+        print(f"SHM:          {human(shm_sz)}")
+    print(f"ディスク合計: {human(total)}")
+    print(f"ページ:       {page_count} pages × {page_size} B "
+          f"(空き {freelist} pages = {human(free_bytes)})")
+    return 0
+
+
 def resolve_session_id(conn, given: str) -> str | None:
     """Accept either a full session_id or a unique prefix (>= 4 chars).
 
@@ -667,7 +721,7 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse._SubParsersAction]
                    help=f"SQLite ファイルのパス (default: {DEFAULT_DB}; "
                         "環境変数 SESSIONDB_PATH でも指定可)")
     sub = p.add_subparsers(dest="cmd", required=True,
-                           metavar="{index,search,stats,show,help}")
+                           metavar="{index,search,stats,size,show,help}")
 
     p_index = sub.add_parser(
         "index", help="増分または全インデックス",
@@ -718,6 +772,15 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse._SubParsersAction]
         description="総セッション数・プロジェクト別件数・最大セッションを表示",
     )
     p_stats.set_defaults(func=cmd_stats)
+
+    p_size = sub.add_parser(
+        "size", help="DB のディスク使用量を表示",
+        description="SQLite DB 本体 + WAL/SHM のディスク使用量とページ統計を表示 "
+                    "(stats の総バイト数=元 JSONL 合計とは別物)",
+    )
+    p_size.add_argument("--format", choices=["text", "json"], default="text",
+                        help="出力形式 (default: text; json はエージェント向け)")
+    p_size.set_defaults(func=cmd_size)
 
     p_show = sub.add_parser(
         "show", help="セッションを時系列で出力",

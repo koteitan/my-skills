@@ -28,7 +28,8 @@ sessiondb index                       # incremental rebuild
 sessiondb index --full                # drop and rebuild from scratch
 sessiondb search "<query>" --format=jsonl [--project P] [--role R] [--limit N]
 sessiondb search                      # query 省略 = セッション一覧 (新しい順)
-sessiondb stats
+sessiondb stats                       # content totals (sum of source JSONL bytes)
+sessiondb size [--format=json]        # on-disk DB usage (.db + WAL/SHM + page stats)
 sessiondb show <session_id> [--line L] [--context K]
 ```
 
