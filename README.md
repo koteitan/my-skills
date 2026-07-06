@@ -44,14 +44,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 
 ## bin/ scripts
 
-| Script | Description |
-|--------|-------------|
-| [claude-pushover](bin/claude-pushover) | Send Claude Code conversation summary via Pushover (intended as a Stop hook) |
-| [pushover](bin/pushover) | Thin `curl` wrapper around the Pushover API |
-| [live-server-list](bin/live-server-list) | List ports of running `live-server` instances |
-| [mv-session](bin/mv-session) | Move a directory together with its `~/.claude/projects/` session dir |
-| [newline](bin/newline) | Detect CR / LF / CRLF line endings in files |
-| [sessiondb](bin/sessiondb) | Build and query a SQLite + FTS5 index over Claude Code session JSONL logs |
+See [`bin/README.md`](bin/README.md) for the list of helper scripts and their descriptions.
 
 ## License
 

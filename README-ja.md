@@ -44,14 +44,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 
 ## bin/ スクリプト一覧
 
-| スクリプト | 説明 |
-|-----------|------|
-| [claude-pushover](bin/claude-pushover) | Claude Code の会話要約を Pushover で通知（Stop フック想定） |
-| [pushover](bin/pushover) | Pushover API への薄い `curl` ラッパー |
-| [live-server-list](bin/live-server-list) | 動作中の `live-server` のポート一覧を表示 |
-| [mv-session](bin/mv-session) | ディレクトリと対応する `~/.claude/projects/` セッションを一緒に移動 |
-| [newline](bin/newline) | ファイルの改行コード（CR / LF / CRLF）を判定 |
-| [sessiondb](bin/sessiondb) | Claude Code セッション JSONL ログの SQLite + FTS5 インデックス構築と検索 |
+ヘルパースクリプトの一覧と説明は [`bin/README-ja.md`](bin/README-ja.md) を参照。
 
 ## ライセンス
 
