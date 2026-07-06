@@ -1,0 +1,78 @@
+#!/bin/bash
+# sessionmv <a> <b>
+# Move directory <a> to <b>, and also move the corresponding Claude Code
+# project directories under ~/.claude/projects/ (including ones for
+# subdirectories of <a>), rewriting "cwd" paths inside session JSONL files.
+set -euo pipefail
+
+PROJECTS_DIR="$HOME/.claude/projects"
+
+usage() {
+  echo "usage: sessionmv <a> <b>" >&2
+  exit 1
+}
+
+[ $# -eq 2 ] || usage
+
+src="$1"
+dst="$2"
+
+[ -d "$src" ] || { echo "error: source directory not found: $src" >&2; exit 1; }
+
+# absolute paths (dst may not exist yet)
+src_abs="$(realpath "$src")"
+dst_abs="$(realpath -m "$dst")"
+
+# mv semantics: if dst is an existing directory, move src INTO it (dst/src)
+if [ -d "$dst_abs" ]; then
+  dst_abs="$dst_abs/$(basename "$src_abs")"
+fi
+[ -e "$dst_abs" ] && { echo "error: destination already exists: $dst_abs" >&2; exit 1; }
+
+[ "$src_abs" = "$dst_abs" ] && { echo "error: source and destination are the same" >&2; exit 1; }
+case "$dst_abs/" in
+  "$src_abs"/*) echo "error: destination is inside source" >&2; exit 1 ;;
+esac
+
+# Claude Code encodes a cwd into a project dir name by replacing every
+# non-alphanumeric character with '-'  (e.g. /home/u/.claude -> -home-u--claude)
+encode() {
+  printf '%s' "$1" | sed 's/[^a-zA-Z0-9]/-/g'
+}
+
+enc_src="$(encode "$src_abs")"
+enc_dst="$(encode "$dst_abs")"
+
+# refuse to move anything if <a> has no Claude Code session
+has_session=0
+for proj in "$PROJECTS_DIR/$enc_src" "$PROJECTS_DIR/$enc_src"-*; do
+  [ -d "$proj" ] && { has_session=1; break; }
+done
+if [ "$has_session" -eq 0 ]; then
+  echo "error: no Claude Code session found for $src_abs (nothing moved)" >&2
+  exit 1
+fi
+
+# 1) move the real directory
+mv "$src_abs" "$dst_abs"
+echo "moved: $src_abs -> $dst_abs"
+
+# 2) move project dirs: exact match + subdirectory matches (enc_src-*)
+for proj in "$PROJECTS_DIR/$enc_src" "$PROJECTS_DIR/$enc_src"-*; do
+  [ -d "$proj" ] || continue
+  base="$(basename "$proj")"
+  newbase="$enc_dst${base#"$enc_src"}"
+  newproj="$PROJECTS_DIR/$newbase"
+  if [ -e "$newproj" ]; then
+    echo "warning: $newproj already exists, skipping $base" >&2
+    continue
+  fi
+  mv "$proj" "$newproj"
+  echo "moved: $PROJECTS_DIR/$base -> $newproj"
+
+  # 3) rewrite cwd paths inside session JSONL files
+  esc_src="$(printf '%s' "$src_abs" | sed 's/[\/&\\]/\\&/g')"
+  esc_dst="$(printf '%s' "$dst_abs" | sed 's/[\/&\\]/\\&/g')"
+  find "$newproj" -name '*.jsonl' -type f -print0 \
+    | xargs -0 -r sed -i "s/\"cwd\":\"$esc_src\([\/\"]\)/\"cwd\":\"$esc_dst\1/g"
+done

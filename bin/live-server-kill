@@ -1,0 +1,51 @@
+#!/bin/bash
+# live-server-kill [port]
+#   no arg : if exactly one live-server runs, kill it.
+#            if two or more run, print `live-server-list` and exit with error.
+#   <port> : kill the live-server bound to that port.
+
+kill_port() {
+    local port="$1"
+    local pat="live-server.*--port=$port([^0-9]|\$)"
+    local pids
+    pids=$(pgrep -f "$pat" 2>/dev/null)
+    if [ -z "$pids" ]; then
+        echo "no live-server found on port $port" >&2
+        return 1
+    fi
+    kill $pids 2>/dev/null
+    sleep 1
+    local left
+    left=$(pgrep -f "$pat" 2>/dev/null)
+    [ -n "$left" ] && kill -9 $left 2>/dev/null
+    echo "killed live-server on port $port (pids: $(echo $pids | tr '\n' ' '))"
+}
+
+# explicit port -> kill that one
+if [ -n "$1" ]; then
+    kill_port "$1"
+    exit $?
+fi
+
+# no arg -> collect ports of running live-server instances
+mapfile -t ports < <(
+    for pid in $(pgrep -f 'node .*live-server' 2>/dev/null); do
+        cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+        case "$cmd" in *live-server*) ;; *) continue ;; esac
+        p=$(printf '%s\n' "$cmd" | grep -oE -- '--port=[0-9]+' | head -n1 | cut -d= -f2)
+        [ -n "$p" ] && echo "$p"
+    done
+)
+
+count=${#ports[@]}
+if [ "$count" -eq 0 ]; then
+    echo "(no live-server running)" >&2
+    exit 1
+elif [ "$count" -eq 1 ]; then
+    kill_port "${ports[0]}"
+    exit $?
+else
+    echo "multiple live-servers running; specify a port:" >&2
+    live-server-list
+    exit 1
+fi

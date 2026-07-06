@@ -1,0 +1,23 @@
+#!/bin/bash
+# live-server-sil [port]
+# Start live-server in the background and print a single clickable link.
+# Serves the current directory.
+
+IF=eno1
+
+PORT="${1:-8213}"
+
+IP=$(ip -4 -o addr show dev "$IF" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+if [ -z "$IP" ]; then
+    echo "error: no IPv4 address on interface '$IF'" >&2
+    exit 1
+fi
+
+URL="http://${IP}:${PORT}/"
+
+# one line, URL rendered as a clickable hyperlink (OSC 8)
+printf 'start at \033]8;;%s\033\\%s\033]8;;\033\\\n' "$URL" "$URL"
+
+# run detached; discard live-server's own output
+nohup npx live-server --quiet --no-browser --host="$IP" --port="$PORT" >/dev/null 2>&1 &
+disown
