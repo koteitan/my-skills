@@ -160,6 +160,12 @@ INJECTED_MARKERS = (
     "<local-command-stdout>", "<local-command-stderr>",
     "<task-notification>",       # background task completion notice
     "<system-reminder>",
+    "<teammate-message",         # inter-session (multi-agent) message, raw
+    "Another Claude session sent a message:",  # relayed teammate message
+)
+# Substrings that mark a harness/inter-agent injection anywhere in the text.
+INJECTED_SUBSTRINGS = (
+    "<teammate-message",         # teammate relay (may carry a leading prefix)
 )
 # Leading text of the summary auto-inserted on compaction continuation.
 COMPACT_PREFIX = "This session is being continued from a previous conversation"
@@ -195,6 +201,8 @@ def is_genuine_user(entry):
         return False
     stripped = text.lstrip()
     if stripped.startswith(INJECTED_MARKERS):
+        return False
+    if any(s in stripped for s in INJECTED_SUBSTRINGS):
         return False
     if stripped.startswith(COMPACT_PREFIX):   # compaction continuation summary
         return False
