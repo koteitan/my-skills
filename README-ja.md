@@ -44,7 +44,17 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 
 ## bin/ スクリプト一覧
 
-ヘルパースクリプトの一覧と説明は [`bin/README-ja.md`](bin/README-ja.md) を参照。
+| スクリプト | 説明 |
+|-----------|------|
+| [claude-pushover](bin/claude-pushover) | Claude Code の会話要約を Pushover で通知（Stop フック想定） |
+| [pushover](bin/pushover) | Pushover API への薄い `curl` ラッパー |
+| [live-server-sil](bin/live-server-sil) | `live-server` を静かにバックグラウンド起動しクリック可能な URL を表示 |
+| [live-server-list](bin/live-server-list) | 動作中の `live-server` を PID・URL・配信ディレクトリで一覧表示 |
+| [live-server-kill](bin/live-server-kill) | 動作中の `live-server` を停止（唯一のインスタンス、または port 指定） |
+| [sessiondb](bin/sessiondb) | Claude Code セッション JSONL ログの SQLite + FTS5 インデックス構築と検索 |
+| [sessionmv](bin/sessionmv) | ディレクトリを対応する全 `~/.claude/projects/` セッションごと移動し JSONL 内の `cwd` を書き換え |
+| [newline](bin/newline) | ファイルの改行コード（CR / LF / CRLF）を判定 |
+| [nostrsocat](bin/nostrsocat) | Nostr リレー照会用の `websocat` ラッパー |
 
 ## ライセンス
 

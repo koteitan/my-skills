@@ -44,7 +44,17 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 
 ## bin/ scripts
 
-See [`bin/README.md`](bin/README.md) for the list of helper scripts and their descriptions.
+| Script | Description |
+|--------|-------------|
+| [claude-pushover](bin/claude-pushover) | Send Claude Code conversation summary via Pushover (intended as a Stop hook) |
+| [pushover](bin/pushover) | Thin `curl` wrapper around the Pushover API |
+| [live-server-sil](bin/live-server-sil) | Start `live-server` silently in the background and print a clickable URL |
+| [live-server-list](bin/live-server-list) | List running `live-server` instances: PID, URL, serving directory |
+| [live-server-kill](bin/live-server-kill) | Kill a running `live-server` (sole instance, or by port) |
+| [sessiondb](bin/sessiondb) | Build and query a SQLite + FTS5 index over Claude Code session JSONL logs |
+| [sessionmv](bin/sessionmv) | Move a directory with all its `~/.claude/projects/` session dirs, rewriting `cwd` in JSONL |
+| [newline](bin/newline) | Detect CR / LF / CRLF line endings in files |
+| [nostrsocat](bin/nostrsocat) | `websocat` wrapper for querying Nostr relays |
 
 ## License
 
