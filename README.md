@@ -10,6 +10,7 @@ A collection of Claude Code skills, slash commands, and helper scripts, managed 
 skills/<skill-name>/SKILL.md
 commands/<command-name>.md
 bin/<script-name>
+statusline-command.sh
 ```
 
 ## Installation
@@ -25,6 +26,9 @@ ln -s "$PWD/commands/<command-name>.md" ~/.claude/commands/<command-name>.md
 
 # Helper scripts (any directory on $PATH)
 ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
+
+# statusLine command
+ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 ```
 
 ## Skills
@@ -57,6 +61,20 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 | [sessionmv](bin/sessionmv) | Move a directory with all its `~/.claude/projects/` session dirs, rewriting `cwd` in JSONL |
 | [newline](bin/newline) | Detect CR / LF / CRLF line endings in files |
 | [nostrsocat](bin/nostrsocat) | `websocat` wrapper for querying Nostr relays |
+
+## statusLine
+
+[statusline-command.sh](statusline-command.sh) draws the two-line status line:
+`host:dir` on top, then gauges for the context window and the 5-hour / weekly rate
+limits, each with an exhaustion forecast, plus the model and effort level. It also
+appends every rate-limit reading to `~/.claude/statusline-usage.log`, which is what
+the [check-usage](skills/check-usage/) skill reads.
+
+Point `statusLine.command` in `~/.claude/settings.json` at it:
+
+```json
+"statusLine": { "type": "command", "command": "bash /home/<user>/.claude/statusline-command.sh" }
+```
 
 ## License
 
