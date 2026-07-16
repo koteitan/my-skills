@@ -2,9 +2,12 @@
 
 # check-usage
 
-A Claude Code skill that reports, in one command, the state of the **5-hour** and
+A Claude Code skill that lets the agent find out the state of the **5-hour** and
 **weekly** rate limits (the Max plan's usage ceilings): how much is used, when the
 window resets, and when you would hit the limit at the current pace.
+
+Ask "how much of this week is left?", "when do I get it back?", or "will I run out
+at this rate?" and the agent runs this skill's script to answer.
 
 ## Example output
 
