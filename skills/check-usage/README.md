@@ -21,6 +21,33 @@ Read as: the 5-hour window is 90% spent and, at this pace, runs out at 08:54 —
 46 minutes before it resets at 09:40. The weekly window is 51% spent and is not
 on track to run out before its reset at 20:00.
 
+## Installation
+
+This skill reads a log written by [statusline-command.sh](../../statusline-command.sh)
+at the root of this repository. **A stock Claude Code has no such log**: it hands the
+rate-limit values to the statusLine and records them nowhere. So you need to install
+**both** the skill and that statusLine script.
+
+```bash
+# 1. the skill itself
+ln -s "$PWD/skills/check-usage" ~/.claude/skills/check-usage
+
+# 2. the statusLine script that writes the log
+ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
+```
+
+Then wire it up as the statusLine in `~/.claude/settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "bash /home/<user>/.claude/statusline-command.sh" }
+```
+
+From then on, every statusLine render appends a sample to
+`~/.claude/statusline-usage.log`. **The forecast needs at least two samples**, so right
+after installing you get the percentage and reset time only; the forecast appears once
+you have been using Claude Code for a while. Override the log location with the
+`STATUSLINE_USAGE_LOG` environment variable.
+
 ## How it works
 
 Claude Code pipes a JSON blob into the statusLine command, and that blob carries
@@ -29,7 +56,7 @@ Claude Code pipes a JSON blob into the statusLine command, and that blob carries
 - `.rate_limits.five_hour.{used_percentage, resets_at}`
 - `.rate_limits.seven_day.{used_percentage, resets_at}`
 
-`~/.claude/statusline-command.sh` appends each reading as a sample to
+statusline-command.sh appends each reading as a sample to
 `~/.claude/statusline-usage.log` — one sample per line, `-` where a value is absent:
 
 ```
@@ -54,24 +81,3 @@ This script reads that log and:
   is 1%), so no forecast appears. That is also when plenty remains.
 - Samples only accumulate when the statusLine renders, so gaps appear across
   stretches where Claude Code was not in use.
-
-## Do not reconstruct the windows from local JSONL
-
-Tools like `ccusage blocks` **infer** window boundaries by flooring the first
-activity in the local JSONL to the hour, so they drift from the real reset
-(measured 2026-07-17: ccusage reported a 09:00 reset while the true `resets_at`
-was 09:40). The `rate_limits` values this skill reads come from the server and
-are authoritative.
-
-## Requirements
-
-- `~/.claude/statusline-command.sh` configured as the statusLine command, so that
-  it appends samples to `~/.claude/statusline-usage.log`.
-- The log location can be overridden with the `STATUSLINE_USAGE_LOG` environment
-  variable.
-
-## Installation
-
-```bash
-ln -s "$PWD/skills/check-usage" ~/.claude/skills/check-usage
-```
