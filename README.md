@@ -33,6 +33,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 |-------|-------------|
 | [compact-unfreeze](skills/compact-unfreeze/) | Work around the Remote Control + `/compact` frozen-input bug by arming a background Monitor to flush the stuck queue |
 | [autonomy-stat](skills/autonomy-stat/) | Measure an agent's per-turn self-running time from a session JSONL and render it as an interactive HTML chart (model-work vs tool-wait) |
+| [check-usage](skills/check-usage/) | Report the 5-hour and weekly rate-limit state: percent used, reset time, and the exhaustion forecast at the current pace |
 | [mermaid](skills/mermaid/) | Rules for drawing Mermaid diagrams: no node fills, no diamonds, short captions |
 | [my-github-md-rule](skills/my-github-md-rule/) | Rules for generating bilingual (EN/JA) markdown documents on GitHub |
 | [sessiondb](skills/sessiondb/) | SQLite + FTS5 full-text search over Claude Code session JSONL logs |

@@ -33,6 +33,7 @@ ln -s "$PWD/bin/<script-name>" ~/bin/<script-name>
 |--------|------|
 | [compact-unfreeze](skills/compact-unfreeze/) | Remote Control ＋ `/compact` の入力フリーズバグを、バックグラウンド Monitor の発火でキューをフラッシュして回避 |
 | [autonomy-stat](skills/autonomy-stat/) | エージェントの1ターンあたりの自走時間をセッション JSONL から算出し、インタラクティブな HTML グラフ（モデル稼働 vs tool待ち）として描画 |
+| [check-usage](skills/check-usage/) | 5時間枠と週次の rate limit の状態を報告：使用率・リセット時刻・現ペースでの上限到達予測 |
 | [mermaid](skills/mermaid/) | Mermaid 図のルール：ノードに背景色を使わない・ひし形を使わない・キャプションは短く |
 | [my-github-md-rule](skills/my-github-md-rule/) | GitHub 上で日英バイリンガルの markdown ドキュメントを生成するルール |
 | [sessiondb](skills/sessiondb/) | Claude Code セッション JSONL ログを SQLite + FTS5 で全文検索 |
