@@ -2,12 +2,59 @@
 
 # check-usage
 
-A Claude Code skill that lets the agent find out the state of the **5-hour** and
-**weekly** rate limits (the Max plan's usage ceilings): how much is used, when the
-window resets, and when you would hit the limit at the current pace.
+A Claude Code skill that lets **the agent itself** find out the state of the
+**5-hour** and **weekly** rate limits (the Max plan's usage ceilings): how much is
+used, when the window resets, and when it would hit the limit at the current pace.
 
-Ask "how much of this week is left?", "when do I get it back?", or "will I run out
-at this rate?" and the agent runs this skill's script to answer.
+You can see what is left by glancing at the status line; the agent cannot. Starting
+a long job blind, it simply dies mid-task the moment the limit is reached. With this
+skill the agent can check the remaining budget and the exhaustion forecast before it
+commits to work, so it can:
+
+- wrap up at a checkpoint instead of starting a large workflow on a thin budget;
+- decide whether to fan out dozens of subagents or run a small pool;
+- split the work around the reset time.
+
+That pacing is what keeps a long job from being cut in half.
+
+## Why it is worth checking before a fanout
+
+The docs themselves warn that
+[a single burst of heavy activity, such as a large workflow fanout, can exhaust the
+weekly allowance before the session window resets](https://code.claude.com/docs/en/errors.md).
+What they don't say is how much you lose when it happens.
+
+**A rate-limit death destroys an in-flight subagent's context entirely.** The dead
+`agent()` call is journaled as nothing but `{"type":"result","value":null}`, and a
+`resumeFromRunId` restarts it from the bare prompt with a fresh context (completed
+agents do replay from cache). Only files written to disk survive; the sole recovery
+routes are those artifacts and digging through the session jsonl. An agent holding
+ten minutes of work in memory loses all of it.
+
+So a manager agent can run this skill before committing to a fanout and again
+between phases — to size the pool, or to re-cut the work around the reset.
+
+### Read the forecast asymmetrically
+
+This is the crux. **The forecast extrapolates from past pace, which makes it least
+trustworthy exactly when you are about to change that pace.** The forecast you read
+one second before launching sixteen parallel agents is guaranteed to be optimistic.
+So:
+
+- **A forecast that names a time** is a strong signal: believe it, don't start.
+- **No forecast is not proof of headroom.** It only means "at the current pace" —
+  and a fanout is precisely what breaks the current pace.
+
+To size a fanout, read `~/.claude/statusline-usage.log` directly and see how many
+points the last comparable wave actually moved. That measurement beats the forecast.
+
+### Keep disk discipline unconditional
+
+Do not make "save your work" conditional on this reading. Context is lost to API
+errors, compaction and interrupts too, and the forecast fails you precisely when it
+says you are fine. Make 1 agent = 1 file, draft early, and no in-memory accumulation
+standing rules; use this skill for the *decision to start*, which is the one thing
+disk discipline cannot cover.
 
 ## Example output
 
