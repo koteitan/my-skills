@@ -10,7 +10,7 @@ description: When the user requests to generate markdown document on github
 - Each markdown file must have the following link at the top of the file:
 
 ```
-[← Back](../README-ja.md) | [English](*.md) | [Japanese](*-ja.md)
+[← Back](../README.md) | [English](*.md) | [Japanese](*-ja.md)
 ```
 
 - "Back" link should point to the README.md in the parent directory.
@@ -20,3 +20,22 @@ description: When the user requests to generate markdown document on github
 ```
 [English](README.md) | [Japanese](README-ja.md)
 ```
+
+## Language modes
+
+The pair always has a **main** file — the one GitHub renders by default (`README.md` or
+`<name>.md`) — plus a **secondary** translation. The invocation mode sets which language
+is the main:
+
+- **English main** (default): main = English `*.md`; secondary = Japanese `*-ja.md`.
+  - header: `[← Back](../README.md) | [English](*.md) | [Japanese](*-ja.md)`
+  - root README: `[English](README.md) | [Japanese](README-ja.md)`
+- **Japanese main**: main = Japanese `*.md`; secondary = English `*-en.md`.
+  - header: `[← Back](../README.md) | [English](*-en.md) | [Japanese](*.md)`
+  - root README: `[English](README-en.md) | [Japanese](README.md)`
+
+"**both**" (as in "Japanese main both") just means: emit both language files of the pair
+(the usual case).
+
+The **Back** link always points to the parent directory's main README (`../README.md`) in
+either mode.
