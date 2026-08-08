@@ -39,8 +39,10 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [autonomy-stat](skills/autonomy-stat/) | Measure an agent's per-turn self-running time from a session JSONL and render it as an interactive HTML chart (model-work vs tool-wait) |
 | [check-usage](skills/check-usage/) | Report the 5-hour and weekly rate-limit state: percent used, reset time, and the exhaustion forecast at the current pace |
 | [mermaid](skills/mermaid/) | Rules for drawing Mermaid diagrams: no node fills, no diamonds, short captions |
+| [manim-tts](skills/manim-tts/) | Pitfalls of building narrated explainer videos with manim + VOICEVOX TTS: cache-dropped audio, mobjects that reappear, LaTeX failures on Japanese |
 | [my-github-md-rule](skills/my-github-md-rule/) | Rules for generating bilingual (EN/JA) markdown documents on GitHub |
 | [sessiondb](skills/sessiondb/) | SQLite + FTS5 full-text search over Claude Code session JSONL logs |
+| [use-bms](skills/use-bms/) | Build and drive the [yaBMS](https://github.com/koteitan/yaBMS) `c/bms` CLI: expand, compare, standard-check and loop-hunt Bashicu Matrices |
 
 ## Slash commands
 

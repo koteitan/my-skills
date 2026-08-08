@@ -39,8 +39,10 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [autonomy-stat](skills/autonomy-stat/) | エージェントの1ターンあたりの自走時間をセッション JSONL から算出し、インタラクティブな HTML グラフ（モデル稼働 vs tool待ち）として描画 |
 | [check-usage](skills/check-usage/) | 5時間枠と週次の rate limit の状態を報告：使用率・リセット時刻・現ペースでの上限到達予測 |
 | [mermaid](skills/mermaid/) | Mermaid 図のルール：ノードに背景色を使わない・ひし形を使わない・キャプションは短く |
+| [manim-tts](skills/manim-tts/) | manim + VOICEVOX で音声付き解説動画を作るときの罠：キャッシュで音声が落ちる・消したはずの図形が復活する・日本語で LaTeX が落ちる |
 | [my-github-md-rule](skills/my-github-md-rule/) | GitHub 上で日英バイリンガルの markdown ドキュメントを生成するルール |
 | [sessiondb](skills/sessiondb/) | Claude Code セッション JSONL ログを SQLite + FTS5 で全文検索 |
+| [use-bms](skills/use-bms/) | [yaBMS](https://github.com/koteitan/yaBMS) の `c/bms` CLI をビルドして使う：バシク行列の展開・比較・標準判定・ループ検出 |
 
 ## スラッシュコマンド一覧
 
