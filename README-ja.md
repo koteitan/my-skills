@@ -41,6 +41,9 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [mermaid](skills/mermaid/) | Mermaid 図のルール：ノードに背景色を使わない・ひし形を使わない・キャプションは短く |
 | [manim-tts](skills/manim-tts/) | manim + VOICEVOX で音声付き解説動画を作るときの罠：キャッシュで音声が落ちる・消したはずの図形が復活する・日本語で LaTeX が落ちる |
 | [my-github-md-rule](skills/my-github-md-rule/) | GitHub 上で日英バイリンガルの markdown ドキュメントを生成するルール |
+| [github-math-check](skills/github-math-check/) | Markdown の数式が GitHub 側の変換を経ても壊れないか、ブラウザに渡る文字列そのものを描画して検証 |
+| [nostr](skills/nostr/) | Nostr 作業の集約：リレー探索・NIP-19 bech32 の自前実装・CLI でのリレー調査・Web アプリの標準構成 |
+| [webapp-defaults](skills/webapp-defaults/) | 素の Web ページを作るときの既定：ダークモード ON・右上ハンバーガーメニュー・UI 状態を localStorage に保存 |
 | [sessiondb](skills/sessiondb/) | Claude Code セッション JSONL ログを SQLite + FTS5 で全文検索 |
 | [use-bms](skills/use-bms/) | [yaBMS](https://github.com/koteitan/yaBMS) の `c/bms` CLI をビルドして使う：バシク行列の展開・比較・標準判定・ループ検出 |
 

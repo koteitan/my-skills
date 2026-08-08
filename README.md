@@ -41,6 +41,9 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [mermaid](skills/mermaid/) | Rules for drawing Mermaid diagrams: no node fills, no diamonds, short captions |
 | [manim-tts](skills/manim-tts/) | Pitfalls of building narrated explainer videos with manim + VOICEVOX TTS: cache-dropped audio, mobjects that reappear, LaTeX failures on Japanese |
 | [my-github-md-rule](skills/my-github-md-rule/) | Rules for generating bilingual (EN/JA) markdown documents on GitHub |
+| [github-math-check](skills/github-math-check/) | Verify that Markdown math survives GitHub's own transformations, by rendering the exact string GitHub hands to the browser |
+| [nostr](skills/nostr/) | Nostr hub: relay discovery, DIY NIP-19 bech32 entities, CLI relay debugging, and the standard web-app stack |
+| [webapp-defaults](skills/webapp-defaults/) | Defaults for a scratch-built vanilla page: dark mode on, top-right hamburger menu, UI state kept in localStorage |
 | [sessiondb](skills/sessiondb/) | SQLite + FTS5 full-text search over Claude Code session JSONL logs |
 | [use-bms](skills/use-bms/) | Build and drive the [yaBMS](https://github.com/koteitan/yaBMS) `c/bms` CLI: expand, compare, standard-check and loop-hunt Bashicu Matrices |
 
