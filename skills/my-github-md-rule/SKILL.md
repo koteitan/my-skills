@@ -1,41 +1,73 @@
 ---
 name: my-github-md-rule
-description: When the user requests to generate markdown document on github
+description: Apply the user's selected README language and navigation-link convention. Use only when the user explicitly asks to use `my-github-md-rule` (including `$my-github-md-rule`) in the current request; do not trigger merely because the request concerns GitHub or Markdown documentation.
 ---
 
-# Rules for GitHub Markdown Documents
+# GitHub Markdown Rules
 
-- Each markdown consists of a pair of `*.md` in English and `*-ja.md` in Japanese.
-  - Exception: `SKILL.md` does not need an EN/JA pair. It is read by the agent (English only) and is not user-facing documentation.
-- Each markdown file must have the following link at the top of the file:
+Apply this skill only after the user explicitly invokes `my-github-md-rule`.
 
+## Select a mode
+
+Accept a mode by number or name. If the user explicitly invokes the skill without selecting a
+mode, ask them to choose mode 1, 2, 3, or 4 before generating files.
+
+| No. | Mode | `README.md` | `README-ja.md` | `README-en.md` | Back link |
+| ---: | --- | --- | --- | --- | --- |
+| 0 | default | Japanese | no | no | no |
+| 1 | Japanese only | Japanese | no | no | yes |
+| 2 | English only | English | no | no | yes |
+| 3 | Japanese main | Japanese | no | English | yes |
+| 4 | English main | English | Japanese | no | yes |
+
+Mode 0 describes normal behavior when the user does not invoke this skill. Do not apply any
+skill-specific file pairing, naming, or navigation-link rule in mode 0.
+
+Only modes 1--4 are active invocations of this skill.
+
+## Generate files
+
+- In mode 1, generate only `README.md` in Japanese.
+- In mode 2, generate only `README.md` in English.
+- In mode 3, generate `README.md` in Japanese and `README-en.md` in English.
+- In mode 4, generate `README.md` in English and `README-ja.md` in Japanese.
+- Keep the contents of both files equivalent in modes 3 and 4.
+- Treat `README.md` as the main file GitHub renders by default.
+- For non-README documents, apply the same naming pattern: the main file is `<name>.md`, and
+  the translation is `<name>-en.md` in mode 3 or `<name>-ja.md` in mode 4.
+
+## Add navigation links
+
+In modes 1--4, put a Back link at the top of every generated Markdown file. Point it to the
+main README in the parent directory:
+
+```markdown
+[← Back](../README.md)
 ```
-[← Back](../README.md) | [English](*.md) | [Japanese](*-ja.md)
+
+In bilingual modes, add the language links on the same line:
+
+- Mode 3: `[← Back](../README.md) | [English](README-en.md) | [Japanese](README.md)`
+- Mode 4: `[← Back](../README.md) | [English](README.md) | [Japanese](README-ja.md)`
+
+For non-README documents, replace the language-link filenames with the corresponding
+`<name>.md`, `<name>-en.md`, or `<name>-ja.md` filenames.
+
+## Check for cross-language link mistakes
+
+`scripts/check-link-lang.py` flags links where a file's language does not match the
+language variant it points to -- for example a Japanese `README-ja.md` linking to a
+subdirectory's English `README.md` when a `README-ja.md` sibling exists. Navigation and
+language-switcher links are recognized by their text and skipped, and single-language
+documents (no same-language sibling on disk) are never flagged.
+
+Pass the mode so the checker knows which suffix maps to which language:
+
+```sh
+python3 scripts/check-link-lang.py --mode 4 <path...>   # mode 4: README.md = English
+python3 scripts/check-link-lang.py --mode 3 <path...>   # mode 3: README.md = Japanese
 ```
 
-- "Back" link should point to the README.md in the parent directory.
-- "English" and "Japanese" links should point each other.
-- Use the following if the markdown file is README in the root directory:
-
-```
-[English](README.md) | [Japanese](README-ja.md)
-```
-
-## Language modes
-
-The pair always has a **main** file — the one GitHub renders by default (`README.md` or
-`<name>.md`) — plus a **secondary** translation. The invocation mode sets which language
-is the main:
-
-- **English main** (default): main = English `*.md`; secondary = Japanese `*-ja.md`.
-  - header: `[← Back](../README.md) | [English](*.md) | [Japanese](*-ja.md)`
-  - root README: `[English](README.md) | [Japanese](README-ja.md)`
-- **Japanese main**: main = Japanese `*.md`; secondary = English `*-en.md`.
-  - header: `[← Back](../README.md) | [English](*-en.md) | [Japanese](*.md)`
-  - root README: `[English](README-en.md) | [Japanese](README.md)`
-
-"**both**" (as in "Japanese main both") just means: emit both language files of the pair
-(the usual case).
-
-The **Back** link always points to the parent directory's main README (`../README.md`) in
-either mode.
+Paths may be files or directories (recursed); the default is the current directory. The
+checker exits 1 when it finds a mismatch and 0 otherwise. Modes 1 and 2 are single-language,
+so there is nothing to cross-check.
