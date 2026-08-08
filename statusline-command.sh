@@ -156,14 +156,18 @@ ctx_bar=$(render_bar "$ctx")
 five_bar=$(render_bar "$five")
 week_bar=$(render_bar "$week")
 
-# When a window is forecast to hit 100% before it resets, show the exhaustion
-# time (red) followed by the reset time (blue) -- i.e. when you run out, and
-# when you get it back. Otherwise the reset wins and nothing needs saying.
+# The reset time (blue) is always shown when available -- i.e. when you get the
+# quota back. When a window is also forecast to hit 100% before it resets, the
+# exhaustion time (red) is prepended -- i.e. when you run out.
 eta_disp() {                      # eta_disp <eta_epoch> <reset_epoch>
   local eta="$1" reset="$2"
-  [ -z "$eta" ] && return
-  printf ' \033[01;31m%s\033[00m \033[01;34m%s\033[00m' \
-    "$(fmt_eta "$eta")" "$(fmt_eta "$reset")"
+  [ -z "$reset" ] && return
+  if [ -n "$eta" ]; then
+    printf ' \033[01;31m%s\033[00m \033[01;34m%s\033[00m' \
+      "$(fmt_eta "$eta")" "$(fmt_eta "$reset")"
+  else
+    printf ' \033[01;34m%s\033[00m' "$(fmt_eta "$reset")"
+  fi
 }
 
 five_eta_disp=$(eta_disp "$(forecast 2 4 "$five" "$fr")" "$fr")
