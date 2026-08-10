@@ -79,6 +79,38 @@ therefore does not mean green, and an agent that reports success from silence
 is reporting a proof it never verified. `leanman check` collapses that to one
 number: only exit 0 is green.
 
+### `#print axioms` output is void unless the exit code is 0 or 1
+
+Lean fills a **failed elaboration** with `sorryAx`, and the partially
+elaborated term can drag in further axioms with it. A declaration whose proof
+errored therefore reports axioms it does not use — `sorryAx`, and
+`Classical.choice` alongside it — even when the file contains no `sorry`:
+
+```
+$ grep -c sorry t-ax2.lean
+0
+$ leanman check --json t-ax2.lean
+  verdict: error / exit 2
+  error : Tactic `rfl` failed: ...
+  info  : 'PSS.t_c' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]
+```
+
+Since `sorryAx > 0` is normally treated as an unconditional regression, reading
+that line without checking the exit code first produces a false alarm — the
+direction that teaches people to discount the check.
+
+It is most convincing in a multi-theorem file: the declarations that *did*
+elaborate print clean `[propext, Quot.sound]` lines a few rows above, so the
+block reads as "this one theorem regressed and picked up choice as well". It
+regressed in no way; it has simply not elaborated yet.
+
+**Read the exit code first.** `check` tests for errors before anything else, so
+exit 2 means Lean reported at least one error and **every** axiom figure in
+that run is void — not only `sorryAx`. Only on exit 0 or 1 does
+`#print axioms` describe the proof you actually wrote. There is no separate
+error count in `--json` because the exit code already carries it; `raw` holds
+the full message list if you need details.
+
 ## Several projects on one machine
 
 `LEANMAN_HOME` holds **one** recorded default project, shared by every agent
@@ -265,6 +297,12 @@ read-only. Only `lake build` writes. So `check` takes a **shared** lock and
 `build`/`setup` take an **exclusive** one: N checks run at full speed together,
 and no check can ever observe half-written oleans. Measured: 8 concurrent
 checks finish in the wall time of one.
+
+**A build that takes minutes at near-zero CPU is lock-blocked, not slow.**
+`user 0m0.5s` / `sys 0m6.9s` against 9 minutes of wall clock means the process
+is waiting on lake's lock while something else holds it. Run `leanman ps`
+before killing anything: SIGTERM-ing the waiter only adds contenders, and the
+same work under `leanman build`'s exclusive lock finishes in seconds.
 
 Memory is the practical ceiling, and it is mild. Each `lean` process shows
 ~3.3 GB RSS, but that is the mmap'd Mathlib olean set counted once per process;
