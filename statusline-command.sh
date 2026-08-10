@@ -1,7 +1,13 @@
 #!/bin/bash
 # statusLine command for Claude Code
 # Line 1: host:dir
-# Line 2: ctx:[bar] 5h:[bar]>ETA w:[bar]>ETA <model> <effort>
+# Line 2: <m>ctx:[bar] 5h:[bar]>ETA w:[bar]>ETA <model> <effort>
+#
+# <m> is a two-letter model tag in the leftmost column, so the current model is
+# readable without scanning to the end of the line:
+#   "o5 " opus-5 / "s5 " sonnet-5 / "f5 " fable-5 / "" anything else
+# Unknown models contribute nothing at all (not even a space), so the line
+# simply starts at "ctx:".
 #
 # Each [bar] is a 10-char gauge:
 #   filled cell : fg=dark  color, bg=light color
@@ -176,10 +182,23 @@ week_eta_disp=$(eta_disp "$(forecast 3 5 "$week" "$wr")" "$wr")
 model_display=""
 [ -n "$model_id" ] && model_display=$(printf '\033[01;36m%s\033[00m' "$model_id")
 
+# Leftmost two-letter tag. The dated variants (claude-opus-5-20260101) are
+# matched too, so the tag does not silently vanish if the id gains a date.
+model_short=""
+case "$model_id" in
+  claude-opus-5|claude-opus-5-*)     model_short='o5' ;;
+  claude-sonnet-5|claude-sonnet-5-*) model_short='s5' ;;
+  claude-fable-5|claude-fable-5-*)   model_short='f5' ;;
+esac
+model_short_display=""
+[ -n "$model_short" ] && \
+  model_short_display=$(printf '\033[01;36m%s\033[00m ' "$model_short")
+
 effort_display=""
 [ -n "$effort" ] && effort_display=$(printf ' \033[01;35m%s\033[00m' "$effort")
 
 printf '\033[01;34m%s\033[00m:\033[01;33m%s\033[00m\n' "$host" "$dir"
-printf 'ctx:[%s] 5h:[%s]%s w:[%s]%s %s%s' \
+printf '%sctx:[%s] 5h:[%s]%s w:[%s]%s %s%s' \
+  "$model_short_display" \
   "$ctx_bar" "$five_bar" "$five_eta_disp" "$week_bar" "$week_eta_disp" \
   "$model_display" "$effort_display"
