@@ -1,0 +1,703 @@
+#!/usr/bin/env bash
+# leanman — Lean 4 proof-check manager.
+#
+# A concurrency-safe front end for checking Lean 4 files, plus precise,
+# leanman-id-based process control. Modeled on `isbman` (the Isabelle build
+# manager) and deliberately usable from INSIDE a restricted sandbox such as
+# the one `codex:rescue` runs its shell in.
+#
+#   * Each job prints a short "leanman-id" (leanman's own handle — NOT a PID).
+#     Kill it with `leanman kill <leanman-id>` from anywhere.
+#   * `leanman ps` lists every running job, globally.
+#   * `leanman check` picks a backend automatically: the kimina-lean-server
+#     HTTP REPL when it is reachable AND serves this project, otherwise a
+#     direct `lean` invocation. The direct path needs no network at all, so a
+#     sandboxed agent gets the same command and the same exit codes.
+#
+# Why this is safe to run from N agents at once: a Lean *check* writes nothing
+# (verified: it succeeds with the project tree mounted read-only), so parallel
+# checks cannot corrupt each other. Only `lake build` writes, so `build` and
+# `setup` take an EXCLUSIVE lock while `check` takes a SHARED one — a check can
+# never observe half-written oleans.
+#
+# How identification works: every process a job spawns inherits LEANMAN_*
+# environment variables. `ps`/`kill` scan /proc/<pid>/environ for the exact
+# LEANMAN_ID and act only on those PIDs — never a blanket `pkill -f lean`.
+# The process environment IS the registry: no daemon, no PID files to go stale.
+#
+# Subcommands:
+#   leanman setup [-C DIR] [--no-build]     # manager, serial: lake build + cache LEAN_PATH + find kimina
+#   leanman check [-m MEMO] [--backend B] [--json] FILE.lean
+#   leanman build [-m MEMO] [lake-build-args...]
+#   leanman ps                              # every running leanman job
+#   leanman kill <leanman-id> | --all | (no arg = jobs started from cwd)
+#   leanman doctor [-C DIR]                 # what backend would be used, and why
+#   leanman version | -v | --version
+#   leanman help | -h | --help
+#
+# `check` exit codes (the whole point — never guess from empty output):
+#   0   green   : no error, no sorry
+#   1   sorry   : compiles but a `sorry` remains
+#   2   error   : Lean reported an error
+#   3   infra   : usage error / no backend / bad project
+#   124 timeout : killed by LEANMAN_TIMEOUT (a runaway proof)
+#
+# Env overrides:
+#   LEANMAN_HOME        state dir           (default: /tmp/leanman-<uid>)
+#   LEANMAN_TIMEOUT     check timeout secs  (default: 300)
+#   LEANMAN_BUILD_TIMEOUT                   (default: 3600)
+#   LEANMAN_BACKEND     auto|kimina|lean    (default: auto)
+#   LEANMAN_KIMINA_URL  force this endpoint (skips project matching)
+#   LEANMAN_KIMINA_ENV  kimina .env to read (default: ~/proofs/pss-proof/kimina-lean-server/.env)
+#   LEANMAN_MEMO        default memo for -m
+#
+# State lives under LEANMAN_HOME, which defaults to /tmp because that is
+# writable from inside the codex sandbox while ~/.cache is not. Everything
+# there is regenerable; losing it costs one `leanman setup`.
+
+set -u
+
+LEANMAN_VERSION="1.0.1"
+
+LEANMAN_HOME="${LEANMAN_HOME:-/tmp/leanman-$(id -u)}"
+LEANMAN_TIMEOUT="${LEANMAN_TIMEOUT:-300}"
+LEANMAN_BUILD_TIMEOUT="${LEANMAN_BUILD_TIMEOUT:-3600}"
+LEANMAN_BACKEND="${LEANMAN_BACKEND:-auto}"
+LEANMAN_KIMINA_ENV="${LEANMAN_KIMINA_ENV:-$HOME/proofs/pss-proof/kimina-lean-server/.env}"
+
+die() { printf 'leanman: %s\n' "$*" >&2; exit 3; }
+note() { printf 'leanman: %s\n' "$*" >&2; }
+
+# ---------------------------------------------------------------------------
+# project resolution
+# ---------------------------------------------------------------------------
+# Walk up from a path until a lakefile is found. Echoes the project root.
+project_root() {
+  local d
+  d=$(cd "${1:-.}" 2>/dev/null && pwd) || return 1
+  while [ -n "$d" ] && [ "$d" != "/" ]; do
+    if [ -f "$d/lakefile.lean" ] || [ -f "$d/lakefile.toml" ]; then
+      printf '%s\n' "$d"; return 0
+    fi
+    d=$(dirname "$d")
+  done
+  return 1
+}
+
+proj_slug() {
+  printf '%s-%s\n' "$(basename "$1")" "$(printf '%s' "$1" | md5sum | cut -c1-8)"
+}
+
+# Resolve the Lean project for a job. Worker agents write their proof files in
+# their OWN workspace, not inside the project tree, so walking up from the file
+# is only one of several routes — the usual one is the default recorded by the
+# manager's `leanman setup`.
+#   $1 = explicit -C value (may be empty), $2 = a path to walk up from (may be empty)
+resolve_project() {
+  local explicit="${1:-}" near="${2:-}" p
+  if [ -n "$explicit" ]; then
+    p=$(project_root "$explicit") || return 1
+    printf '%s\n' "$p"; return 0
+  fi
+  if [ -n "${LEANMAN_PROJECT:-}" ]; then
+    p=$(project_root "$LEANMAN_PROJECT") || return 1
+    printf '%s\n' "$p"; return 0
+  fi
+  if [ -n "$near" ] && p=$(project_root "$near"); then printf '%s\n' "$p"; return 0; fi
+  if p=$(project_root .); then printf '%s\n' "$p"; return 0; fi
+  p=$(cat "$(default_file)" 2>/dev/null || true)
+  if [ -n "$p" ] && [ -d "$p" ]; then printf '%s\n' "$p"; return 0; fi
+  return 1
+}
+
+no_project() {
+  die "no Lean project found. Pass -C <project>, set LEANMAN_PROJECT, run from
+        inside the project, or have the manager run 'leanman setup -C <project>'
+        once (that records the default used by every later check)."
+}
+
+proj_dir()  { printf '%s/proj/%s\n' "$LEANMAN_HOME" "$(proj_slug "$1")"; }
+lock_file() { printf '%s/lock\n' "$(proj_dir "$1")"; }
+default_file() { printf '%s/default-project\n' "$LEANMAN_HOME"; }
+
+# Last two path components. A bare basename is useless here: Lean projects are
+# conventionally `<something>/lean`, so two of them on one machine both show as
+# "lean" and `leanman ps` cannot tell whose job is whose.
+short_dir() {
+  local d="$1" parent
+  parent=$(dirname "$d")
+  if [ "$parent" = "/" ] || [ "$parent" = "." ]; then
+    basename "$d"
+  else
+    printf '%s/%s\n' "$(basename "$parent")" "$(basename "$d")"
+  fi
+}
+
+ensure_state() {
+  local pd; pd=$(proj_dir "$1")
+  mkdir -p "$pd" "$LEANMAN_HOME/run" 2>/dev/null || true
+  [ -e "$(lock_file "$1")" ] || : > "$(lock_file "$1")" 2>/dev/null || true
+}
+
+# A stamp of everything that can invalidate the cached LEAN_PATH.
+proj_stamp() {
+  local root="$1" f out=""
+  for f in lakefile.lean lakefile.toml lean-toolchain lake-manifest.json; do
+    [ -f "$root/$f" ] && out="$out$(stat -c '%n:%Y' "$root/$f" 2>/dev/null) "
+  done
+  printf '%s\n' "$out"
+}
+
+# Echo "LEAN_PATH<TAB>LEAN_BINARY", from cache when fresh. Recomputing costs
+# ~1.2s of `lake` startup, which is most of a check's wall time — hence cache.
+resolve_leanenv() {
+  local root="$1" pd stamp cached_stamp lp lb
+  pd=$(proj_dir "$root"); mkdir -p "$pd" 2>/dev/null || true
+  stamp=$(proj_stamp "$root")
+  cached_stamp=$(cat "$pd/stamp" 2>/dev/null || true)
+
+  if [ "$stamp" = "$cached_stamp" ] && [ -s "$pd/leanpath" ] && [ -s "$pd/leanbin" ]; then
+    printf '%s\t%s\n' "$(cat "$pd/leanpath")" "$(cat "$pd/leanbin")"
+    return 0
+  fi
+
+  command -v lake >/dev/null 2>&1 || return 1
+  # One `lake env` invocation for both values: lake startup dominates, so two
+  # `printenv` calls cost twice as much (measured 868ms vs 433ms).
+  local pair
+  pair=$(cd "$root" && lake env sh -c 'printf "%s\t%s" "$LEAN_PATH" "$LEAN"' 2>/dev/null) || return 1
+  lp=${pair%%	*}; lb=${pair##*	}
+  [ -n "$lp" ] && [ -n "$lb" ] || return 1
+  printf '%s' "$lp" > "$pd/leanpath" 2>/dev/null || true
+  printf '%s' "$lb" > "$pd/leanbin"  2>/dev/null || true
+  printf '%s' "$stamp" > "$pd/stamp" 2>/dev/null || true
+  printf '%s\t%s\n' "$lp" "$lb"
+}
+
+# ---------------------------------------------------------------------------
+# kimina discovery
+# ---------------------------------------------------------------------------
+# Echo a usable /api/check URL, or nothing. A kimina instance serves exactly
+# ONE project, so an instance whose LEAN_SERVER_PROJECT_DIR differs from this
+# project root is deliberately NOT used — checking against the wrong
+# environment is worse than being slow.
+kimina_url_for() {
+  local root="$1" env_file="$LEANMAN_KIMINA_ENV" port pdir host
+
+  if [ -n "${LEANMAN_KIMINA_URL:-}" ]; then
+    printf '%s\n' "$LEANMAN_KIMINA_URL"; return 0
+  fi
+  [ -r "$env_file" ] || return 1
+  port=$(sed -n 's/^LEAN_SERVER_PORT=//p'        "$env_file" | head -1 | tr -d '"'"'"' \r')
+  pdir=$(sed -n 's/^LEAN_SERVER_PROJECT_DIR=//p' "$env_file" | head -1 | tr -d '"'"'"' \r')
+  host=$(sed -n 's/^LEAN_SERVER_HOST=//p'        "$env_file" | head -1 | tr -d '"'"'"' \r')
+  [ -n "$port" ] && [ -n "$pdir" ] || return 1
+  [ "$(cd "$pdir" 2>/dev/null && pwd)" = "$root" ] || return 1
+  case "$host" in ""|0.0.0.0|"::") host=localhost ;; esac
+  printf 'http://%s:%s/api/check\n' "$host" "$port"
+}
+
+# Cheap liveness probe: a plain GET at the root, so it never touches the REPL.
+# (Probing /api/check with an empty snippet spawns a NEW environment for the
+# empty header and blocks ~5s on a cold start — it reports "unreachable" on a
+# perfectly healthy server.) Any HTTP reply, 404 included, proves reachability;
+# the project match was already settled from the .env. Under the codex sandbox
+# socket() is EPERM and this fails in ~3ms, so `auto` costs nothing there.
+kimina_alive() {
+  curl -sS -m 3 -o /dev/null "${1%/api/check}/" 2>/dev/null
+}
+
+sandboxed() {
+  python3 -c 'import socket,sys
+try:
+    socket.socket(socket.AF_INET, socket.SOCK_STREAM).close()
+except OSError:
+    sys.exit(0)
+sys.exit(1)' 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# /proc environ registry (same mechanism as isbman)
+# ---------------------------------------------------------------------------
+# Print "ID<TAB>KIND<TAB>DIR<TAB>TARGET<TAB>MEMO<TAB>PID" per live job process.
+list_procs() {
+  local e env id kind dir target memo pid
+  for e in /proc/[0-9]*/environ; do
+    [ -r "$e" ] || continue
+    env=$(tr '\0' '\n' < "$e" 2>/dev/null) || continue
+    case "$env" in *LEANMAN_ID=*) ;; *) continue ;; esac
+    id=$(printf     '%s\n' "$env" | sed -n 's/^LEANMAN_ID=//p'     | head -1)
+    kind=$(printf   '%s\n' "$env" | sed -n 's/^LEANMAN_KIND=//p'   | head -1)
+    dir=$(printf    '%s\n' "$env" | sed -n 's/^LEANMAN_DIR=//p'    | head -1)
+    target=$(printf '%s\n' "$env" | sed -n 's/^LEANMAN_TARGET=//p' | head -1)
+    memo=$(printf   '%s\n' "$env" | sed -n 's/^LEANMAN_MEMO=//p'   | head -1)
+    pid=$(basename "$(dirname "$e")")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$kind" "$dir" "$target" "$memo" "$pid"
+  done
+}
+
+reap_id() {
+  local id="$1" p hit
+  hit=$(list_procs | awk -F'\t' -v i="$id" '$1==i{print $6}')
+  [ -n "$hit" ] || return 0
+  for p in $hit; do kill -TERM "$p" 2>/dev/null; done
+  sleep 1
+  for p in $(list_procs | awk -F'\t' -v i="$id" '$1==i{print $6}'); do
+    kill -KILL "$p" 2>/dev/null
+  done
+}
+
+new_id() {
+  if [ -r /dev/urandom ]; then
+    od -An -N3 -tx1 /dev/urandom | tr -d ' \n'
+  else
+    printf '%06x' $(( (RANDOM<<8 ^ RANDOM ^ $$) & 0xffffff ))
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# backends. Each prints the raw checker output and exits 0/1/2.
+# ---------------------------------------------------------------------------
+run_kimina() {
+  local file="$1" url="$2"
+  LEANMAN_FILE="$file" LEANMAN_URL="$url" LEANMAN_T="$LEANMAN_TIMEOUT" python3 -c '
+import json, os, re, sys, urllib.request
+path, url = os.environ["LEANMAN_FILE"], os.environ["LEANMAN_URL"]
+code = open(path, encoding="utf-8").read()
+req = urllib.request.Request(
+    url,
+    data=json.dumps({"snippets": [{"id": "leanman", "code": code}]}).encode(),
+    headers={"Content-Type": "application/json"})
+try:
+    body = urllib.request.urlopen(req, timeout=float(os.environ["LEANMAN_T"])).read().decode()
+except Exception as e:
+    print(f"leanman: kimina request failed: {type(e).__name__}: {e}", file=sys.stderr)
+    sys.exit(3)
+print(body)
+d = json.loads(body)
+resp = d["results"][0].get("response", {})
+msgs = resp.get("messages", [])
+if any(m.get("severity") == "error" for m in msgs):
+    sys.exit(2)
+# kimina reports a sorry twice: a warning message and a `sorries` entry.
+# Honour both, so a change in either shape still fails closed.
+if resp.get("sorries") or any(
+        re.search(r"declaration uses .{0,2}sorry", str(m.get("data", ""))) for m in msgs):
+    sys.exit(1)
+sys.exit(0)'
+}
+
+run_lean() {
+  local file="$1" leanpath="$2" leanbin="$3" rc=0 out
+  out=$(LEAN_PATH="$leanpath" "$leanbin" "$file" 2>&1) || rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out"
+  [ "$rc" -ne 0 ] && return 2
+  # Lean 4.30 writes: declaration uses `sorry`  (backticks). Older releases
+  # used 'sorry'. Match either — getting this wrong reports a sorry as green,
+  # which is the one failure mode this tool exists to prevent.
+  printf '%s' "$out" | grep -qE 'declaration uses .{0,2}sorry' && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# subcommand: setup
+# ---------------------------------------------------------------------------
+cmd_setup() {
+  local root="" nobuild=0 nodefault=0 setdefault=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -C|--project) [ "$#" -ge 2 ] || die "$1 needs a directory"; root="$2"; shift 2 ;;
+      --no-build) nobuild=1; shift ;;
+      --no-default) nodefault=1; shift ;;
+      --set-default) setdefault=1; shift ;;
+      *) die "setup: unknown option '$1'" ;;
+    esac
+  done
+  root=$(resolve_project "$root" "") || no_project
+  ensure_state "$root"
+  local pd; pd=$(proj_dir "$root")
+
+  # Guard the shared default BEFORE doing any work, so the conflict is cheap.
+  # The recorded default is what a worker falls back to when it runs
+  # `leanman check FILE.lean` with no -C. Silently repointing it at another
+  # project makes every such worker verify against the wrong environment —
+  # the same class of confident-wrong-answer this tool blocks for kimina.
+  local cur=""
+  [ -r "$(default_file)" ] && cur=$(cat "$(default_file)" 2>/dev/null || true)
+  if [ "$nodefault" -eq 0 ] && [ "$setdefault" -eq 0 ] \
+     && [ -n "$cur" ] && [ "$cur" != "$root" ]; then
+    die "another project is already the recorded default:
+          $cur
+        Taking it over would make every worker that runs 'leanman check FILE.lean'
+        without -C silently verify against THIS project instead.
+        Re-run with --set-default to take it over on purpose, or with
+        --no-default to cache LEAN_PATH and leave the default alone."
+  fi
+
+  if [ "$nobuild" -eq 0 ]; then
+    command -v lake >/dev/null 2>&1 || die "lake not on PATH"
+    note "building $root (exclusive lock) — this is the one serial step"
+    local id; id=$(new_id)
+    ( cd "$root" && setsid env \
+        LEANMAN_ID="$id" LEANMAN_KIND=setup LEANMAN_DIR="$root" \
+        LEANMAN_TARGET="lake build" LEANMAN_MEMO="setup" \
+        timeout --kill-after=10s "$LEANMAN_BUILD_TIMEOUT" \
+        flock -x "$(lock_file "$root")" lake build ) || {
+      local rc=$?; reap_id "$id"
+      die "lake build failed (rc=$rc) — fix the library before fanning out"
+    }
+  fi
+
+  local env_pair lp lb
+  env_pair=$(resolve_leanenv "$root") || die "could not resolve LEAN_PATH (is lake working?)"
+  lp=${env_pair%%	*}; lb=${env_pair##*	}
+
+  local url=""
+  url=$(kimina_url_for "$root" || true)
+  if [ -n "$url" ] && kimina_alive "$url"; then
+    printf '%s' "$url" > "$pd/kimina.url" 2>/dev/null || true
+  else
+    rm -f "$pd/kimina.url" 2>/dev/null || true
+    url=""
+  fi
+
+  # Record the default so agents can just say `leanman check FILE.lean` from
+  # their own workspace, with no knowledge of where the project lives.
+  local defstate
+  if [ "$nodefault" -eq 1 ]; then
+    defstate="left as ${cur:-unset} (--no-default)"
+  else
+    mkdir -p "$LEANMAN_HOME" 2>/dev/null || true
+    printf '%s' "$root" > "$(default_file)" 2>/dev/null || true
+    if [ -n "$cur" ] && [ "$cur" != "$root" ]; then
+      defstate="TAKEN OVER from $cur"
+    else
+      defstate="this project"
+    fi
+  fi
+
+  printf 'leanman: ready\n' >&2
+  printf '  project      %s\n' "$root" >&2
+  printf '  state        %s\n' "$pd" >&2
+  printf '  lean         %s\n' "$lb" >&2
+  printf '  LEAN_PATH    cached (%s entries)\n' "$(printf '%s' "$lp" | tr ':' '\n' | grep -c . )" >&2
+  printf '  kimina       %s\n' "${url:-not used (absent, unreachable, or serves another project)}" >&2
+  printf '  default      %s\n' "$defstate" >&2
+  if [ "$nodefault" -eq 1 ]; then
+    printf '  fan out with leanman check -C %s FILE.lean  (-C is required: not the default)\n' "$root" >&2
+  else
+    printf '  fan out with leanman check FILE.lean  (parallel-safe, shared lock)\n' >&2
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# subcommand: check
+# ---------------------------------------------------------------------------
+cmd_check() {
+  local memo="${LEANMAN_MEMO:-}" backend="$LEANMAN_BACKEND" json=0 file="" cproj=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -m|--memo) [ "$#" -ge 2 ] || die "$1 needs a value"; memo="$2"; shift 2 ;;
+      --memo=*)  memo="${1#--memo=}"; shift ;;
+      -C|--project) [ "$#" -ge 2 ] || die "$1 needs a directory"; cproj="$2"; shift 2 ;;
+      --project=*) cproj="${1#--project=}"; shift ;;
+      --backend) [ "$#" -ge 2 ] || die "--backend needs a value"; backend="$2"; shift 2 ;;
+      --backend=*) backend="${1#--backend=}"; shift ;;
+      --json) json=1; shift ;;
+      -*) die "check: unknown option '$1'" ;;
+      *) [ -z "$file" ] || die "check takes exactly one file"; file="$1"; shift ;;
+    esac
+  done
+  [ -n "$file" ] || die "usage: leanman check [-m MEMO] [-C PROJECT] [--backend auto|kimina|lean] [--json] FILE.lean"
+  [ -r "$file" ] || die "cannot read '$file'"
+  file=$(cd "$(dirname "$file")" && printf '%s/%s\n' "$(pwd)" "$(basename "$file")")
+  memo=$(printf '%s' "$memo" | tr '\t\n' '  ')
+
+  local root; root=$(resolve_project "$cproj" "$(dirname "$file")") || no_project
+  ensure_state "$root"
+  local pd; pd=$(proj_dir "$root")
+
+  # --- pick a backend -------------------------------------------------------
+  local url="" lp="" lb="" chosen=""
+  case "$backend" in
+    kimina|auto)
+      # Precedence: an explicit LEANMAN_KIMINA_URL always wins, then the
+      # endpoint `leanman setup` recorded for this project, then a fresh read
+      # of the kimina .env. (The cache must not shadow the env var — pointing
+      # at a different server has to take effect without re-running setup.)
+      if [ -n "${LEANMAN_KIMINA_URL:-}" ]; then
+        url="$LEANMAN_KIMINA_URL"
+      else
+        url=$(cat "$pd/kimina.url" 2>/dev/null || true)
+        [ -n "$url" ] || url=$(kimina_url_for "$root" || true)
+      fi
+      if [ -n "$url" ] && kimina_alive "$url"; then chosen=kimina; else url=""; fi
+      ;;
+  esac
+  if [ -z "$chosen" ]; then
+    case "$backend" in
+      kimina) die "kimina backend requested but unreachable for $root" ;;
+    esac
+    local env_pair
+    env_pair=$(resolve_leanenv "$root") || die "no backend: kimina unreachable and LEAN_PATH unresolvable (run 'leanman setup')"
+    lp=${env_pair%%	*}; lb=${env_pair##*	}
+    [ -x "$lb" ] || die "lean binary not executable: $lb"
+    chosen=lean
+  fi
+
+  # --- run it, tracked and killable ----------------------------------------
+  local id out rc=0 t0 t1
+  id=$(new_id)
+  out="$LEANMAN_HOME/run/$id.out"
+  mkdir -p "$LEANMAN_HOME/run" 2>/dev/null || true
+  note "check started — leanman-id: $id  [$chosen]  $(basename "$file")"
+  note "stop it with  ->  leanman kill $id"
+
+  t0=$(date +%s)
+  trap 'echo >&2; note "interrupted -> killing leanman-id '"$id"'"; reap_id "'"$id"'"; exit 130' INT TERM
+  if [ "$chosen" = kimina ]; then
+    setsid env \
+      LEANMAN_ID="$id" LEANMAN_KIND=check LEANMAN_DIR="$root" \
+      LEANMAN_TARGET="$file" LEANMAN_MEMO="$memo" \
+      timeout --kill-after=10s "$LEANMAN_TIMEOUT" \
+      flock -s -w 900 "$(lock_file "$root")" \
+      "$0" __run-kimina "$file" "$url" > "$out" 2>&1 &
+  else
+    setsid env \
+      LEANMAN_ID="$id" LEANMAN_KIND=check LEANMAN_DIR="$root" \
+      LEANMAN_TARGET="$file" LEANMAN_MEMO="$memo" \
+      timeout --kill-after=10s "$LEANMAN_TIMEOUT" \
+      flock -s -w 900 "$(lock_file "$root")" \
+      "$0" __run-lean "$file" "$lp" "$lb" > "$out" 2>&1 &
+  fi
+  wait $! || rc=$?
+  trap - INT TERM
+  reap_id "$id"
+  t1=$(date +%s)
+
+  local verdict
+  case "$rc" in
+    0)   verdict=green ;;
+    1)   verdict=sorry ;;
+    2)   verdict=error ;;
+    124) verdict=timeout ;;
+    # 128+signal. A deliberate `leanman kill` lands here (SIGTERM 143, then
+    # SIGKILL 137); calling that "infra" reads as a leanman malfunction.
+    130|137|143) verdict=killed ;;
+    *)   verdict=infra ;;
+  esac
+
+  if [ "$json" -eq 1 ]; then
+    LEANMAN_J_ID="$id" LEANMAN_J_V="$verdict" LEANMAN_J_RC="$rc" \
+    LEANMAN_J_B="$chosen" LEANMAN_J_F="$file" LEANMAN_J_S="$((t1 - t0))" \
+    LEANMAN_J_O="$out" python3 -c '
+import json, os
+print(json.dumps({
+    "id": os.environ["LEANMAN_J_ID"],
+    "verdict": os.environ["LEANMAN_J_V"],
+    "exit": int(os.environ["LEANMAN_J_RC"]),
+    "backend": os.environ["LEANMAN_J_B"],
+    "file": os.environ["LEANMAN_J_F"],
+    "seconds": int(os.environ["LEANMAN_J_S"]),
+    "raw": open(os.environ["LEANMAN_J_O"], encoding="utf-8", errors="replace").read(),
+}, ensure_ascii=False))'
+  else
+    cat "$out"
+    printf 'leanman: %s  [%s]  %ss  leanman-id %s  exit %s\n' \
+      "$verdict" "$chosen" "$((t1 - t0))" "$id" "$rc" >&2
+    [ "$rc" = 124 ] && note "TIMED OUT after ${LEANMAN_TIMEOUT}s — a runaway proof, not a green check"
+  fi
+  rm -f "$out" 2>/dev/null || true
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# subcommand: build  (manager only — takes the exclusive lock)
+# ---------------------------------------------------------------------------
+cmd_build() {
+  local memo="${LEANMAN_MEMO:-}" cproj=""
+  local -a bargs=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -m|--memo) [ "$#" -ge 2 ] || die "$1 needs a value"; memo="$2"; shift 2 ;;
+      --memo=*)  memo="${1#--memo=}"; shift ;;
+      -C|--project) [ "$#" -ge 2 ] || die "$1 needs a directory"; cproj="$2"; shift 2 ;;
+      --project=*) cproj="${1#--project=}"; shift ;;
+      *) bargs+=("$1"); shift ;;
+    esac
+  done
+  command -v lake >/dev/null 2>&1 || die "lake not on PATH"
+  local root; root=$(resolve_project "$cproj" "") || no_project
+  ensure_state "$root"
+  memo=$(printf '%s' "$memo" | tr '\t\n' '  ')
+
+  local id rc=0; id=$(new_id)
+  note "build started — leanman-id: $id  (in $root)"
+  note "stop it with  ->  leanman kill $id"
+  ( cd "$root" && setsid env \
+      LEANMAN_ID="$id" LEANMAN_KIND=build LEANMAN_DIR="$root" \
+      LEANMAN_TARGET="lake build ${bargs[*]+${bargs[*]}}" LEANMAN_MEMO="$memo" \
+      timeout --kill-after=10s "$LEANMAN_BUILD_TIMEOUT" \
+      flock -x "$(lock_file "$root")" lake build ${bargs[@]+"${bargs[@]}"} ) || rc=$?
+  reap_id "$id"
+  [ "$rc" -eq 124 ] && note "leanman-id $id TIMED OUT after ${LEANMAN_BUILD_TIMEOUT}s"
+  if [ "$rc" -eq 0 ]; then
+    # A build can add packages, so re-derive LEAN_PATH rather than trusting the
+    # cache. Recompute it here instead of merely deleting the stamp: leaving the
+    # cache invalidated makes the next `doctor` claim "lakefile/toolchain
+    # changed" when nothing of the sort happened, and makes the next check pay
+    # for the refresh. One extra `lake env` (~0.4s) after a build is free.
+    rm -f "$(proj_dir "$root")/stamp" 2>/dev/null || true
+    resolve_leanenv "$root" >/dev/null 2>&1 \
+      || note "warning: could not refresh the LEAN_PATH cache after the build"
+    # Warn about the resident REPL ONLY when a kimina actually serves THIS
+    # project. On a machine running several proof projects, an unconditional
+    # "restart kimina" tells you to restart the only server there is — which
+    # belongs to somebody else's project.
+    local kurl=""
+    kurl=$(cat "$(proj_dir "$root")/kimina.url" 2>/dev/null || true)
+    [ -n "$kurl" ] || kurl=$(kimina_url_for "$root" || true)
+    if [ -n "$kurl" ] && kimina_alive "$kurl"; then
+      note "library rebuilt. RESTART the kimina serving this project before"
+      note "checking against it — ${kurl%/api/check} — or its REPL keeps the old oleans."
+      note "Until then, check with --backend lean."
+    fi
+  fi
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# subcommand: ps / kill / doctor
+# ---------------------------------------------------------------------------
+cmd_ps() {
+  local data id n kind dir target memo pid et e
+  data=$(list_procs)
+  if [ -z "$data" ]; then echo "(no leanman jobs running)" >&2; return 0; fi
+  printf '%-10s %-6s %-6s %-9s %-24s %-14s %s\n' \
+    "LEANMAN-ID" "KIND" "NPROC" "ELAPSED" "PROJECT" "MEMO" "TARGET"
+  for id in $(printf '%s\n' "$data" | cut -f1 | sort -u); do
+    n=$(printf      '%s\n' "$data" | awk -F'\t' -v i="$id" '$1==i' | wc -l | tr -d ' ')
+    kind=$(printf   '%s\n' "$data" | awk -F'\t' -v i="$id" '$1==i{print $2; exit}')
+    dir=$(printf    '%s\n' "$data" | awk -F'\t' -v i="$id" '$1==i{print $3; exit}')
+    target=$(printf '%s\n' "$data" | awk -F'\t' -v i="$id" '$1==i{print $4; exit}')
+    memo=$(printf   '%s\n' "$data" | awk -F'\t' -v i="$id" '$1==i{print $5; exit}')
+    [ -n "$memo" ] || memo="-"
+    et="?"
+    for pid in $(printf '%s\n' "$data" | awk -F'\t' -v i="$id" '$1==i{print $6}'); do
+      e=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+      [ -n "$e" ] && { [ "$et" = "?" ] && et=0; [ "$e" -gt "$et" ] && et=$e; }
+    done
+    [ "$et" != "?" ] && et="${et}s"
+    printf '%-10s %-6s %-6s %-9s %-24s %-14s %s\n' \
+      "$id" "${kind:--}" "$n" "$et" "$(short_dir "$dir")" "$memo" "$(basename "$target")"
+  done
+}
+
+cmd_kill() {
+  local arg="${1:-}"
+  case "$arg" in
+    --all)
+      local ids id; ids=$(list_procs | cut -f1 | sort -u)
+      [ -n "$ids" ] || { note "no jobs running"; return 0; }
+      for id in $ids; do note "killing leanman-id $id"; reap_id "$id"; done ;;
+    "")
+      local root ids id
+      root=$(project_root . 2>/dev/null || pwd)
+      ids=$(list_procs | awk -F'\t' -v d="$root" '$3==d{print $1}' | sort -u)
+      if [ -z "$ids" ]; then
+        note "no jobs started from $root."
+        note "        use 'leanman ps', then 'leanman kill <leanman-id>'."
+        return 0
+      fi
+      for id in $ids; do note "killing leanman-id $id (from $root)"; reap_id "$id"; done ;;
+    *)
+      local before; before=$(list_procs | awk -F'\t' -v i="$arg" '$1==i' | wc -l)
+      if [ "$before" -eq 0 ]; then
+        note "no running job with leanman-id '$arg' (try 'leanman ps')"; return 1
+      fi
+      reap_id "$arg"; note "killed leanman-id $arg ($before process(es))" ;;
+  esac
+}
+
+cmd_doctor() {
+  local root=""
+  case "${1:-}" in -C|--project) [ "$#" -ge 2 ] || die "$1 needs a directory"; root="$2" ;; esac
+  root=$(resolve_project "$root" "") || no_project
+  local pd; pd=$(proj_dir "$root")
+
+  printf 'leanman %s\n' "$LEANMAN_VERSION"
+  printf '  project        %s\n' "$root"
+  printf '  state dir      %s\n' "$pd"
+  if sandboxed; then
+    printf '  environment    SANDBOXED (socket() denied) -> kimina is unreachable by design\n'
+  else
+    printf '  environment    unrestricted (socket() allowed)\n'
+  fi
+
+  local stamp cached
+  stamp=$(proj_stamp "$root"); cached=$(cat "$pd/stamp" 2>/dev/null || true)
+  if [ ! -s "$pd/leanpath" ]; then
+    printf '  LEAN_PATH      not cached -> the next check computes it (~0.5s), or run: leanman setup\n'
+  elif [ "$stamp" = "$cached" ]; then
+    printf '  LEAN_PATH      cached and fresh\n'
+  elif [ -z "$cached" ]; then
+    printf '  LEAN_PATH      cached, freshness unrecorded -> will recompute once\n'
+  else
+    printf '  LEAN_PATH      STALE: lakefile / lean-toolchain / lake-manifest.json changed -> will recompute\n'
+  fi
+
+  local url; url=$(kimina_url_for "$root" || true)
+  if [ -z "$url" ]; then
+    printf '  kimina         none for this project\n'
+  elif kimina_alive "$url"; then
+    printf '  kimina         reachable: %s\n' "$url"
+  else
+    printf '  kimina         configured but unreachable: %s\n' "$url"
+  fi
+
+  local backend="lean"
+  [ -n "$url" ] && kimina_alive "$url" && backend="kimina"
+  printf '  backend (auto) %s\n' "$backend"
+
+  local cur=""
+  [ -r "$(default_file)" ] && cur=$(cat "$(default_file)" 2>/dev/null || true)
+  if [ -z "$cur" ]; then
+    printf '  default proj   none recorded -> workers must pass -C\n'
+  elif [ "$cur" = "$root" ]; then
+    printf '  default proj   this project (bare `leanman check FILE.lean` lands here)\n'
+  else
+    printf '  default proj   ANOTHER project: %s\n' "$cur"
+    printf '                 a bare `leanman check FILE.lean` verifies against THAT, not this one\n'
+  fi
+}
+
+usage_short() {
+  echo "leanman (setup | check FILE.lean | build | ps | kill [--all] | doctor | (help|-h) | (version|-v))"
+}
+
+# Print the leading comment block (line 2 up to the first non-comment line),
+# so help never drifts out of sync with the header's length.
+usage_long() {
+  awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
+}
+
+# ---------------------------------------------------------------------------
+# dispatch
+# ---------------------------------------------------------------------------
+sub="${1:-}"; shift 2>/dev/null || true
+case "$sub" in
+  setup)  cmd_setup "$@" ;;
+  check)  cmd_check "$@" ;;
+  build)  cmd_build "$@" ;;
+  ps)     cmd_ps "$@" ;;
+  kill)   cmd_kill "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  # internal: the actual checker, re-entered under setsid/timeout/flock so the
+  # whole tree carries LEANMAN_* and is killable by leanman-id.
+  __run-kimina) run_kimina "$@" ;;
+  __run-lean)   run_lean "$@" ;;
+  -v|--version|version) echo "leanman $LEANMAN_VERSION" ;;
+  -h|--help|help) usage_long ;;
+  "") usage_short ;;
+  *) die "unknown subcommand '$sub' (use: setup | check | build | ps | kill | doctor)" ;;
+esac
