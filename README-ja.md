@@ -46,7 +46,6 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [webapp-defaults](skills/webapp-defaults/) | 素の Web ページを作るときの既定：ダークモード ON・右上ハンバーガーメニュー・UI 状態を localStorage に保存 |
 | [sessiondb](skills/sessiondb/) | Claude Code セッション JSONL ログを SQLite + FTS5 で全文検索 |
 | [use-bms](skills/use-bms/) | [yaBMS](https://github.com/koteitan/yaBMS) の `c/bms` CLI をビルドして使う：バシク行列の展開・比較・標準判定・ループ検出 |
-| [leanman](skills/leanman/) | Lean 4 の証明を複数エージェントから同時に検査：終了コードで判定・サンドボックス内でも通るバックエンド・ハンドル指定の kill |
 
 ## スラッシュコマンド一覧
 

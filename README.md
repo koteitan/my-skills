@@ -46,7 +46,6 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [webapp-defaults](skills/webapp-defaults/) | Defaults for a scratch-built vanilla page: dark mode on, top-right hamburger menu, UI state kept in localStorage |
 | [sessiondb](skills/sessiondb/) | SQLite + FTS5 full-text search over Claude Code session JSONL logs |
 | [use-bms](skills/use-bms/) | Build and drive the [yaBMS](https://github.com/koteitan/yaBMS) `c/bms` CLI: expand, compare, standard-check and loop-hunt Bashicu Matrices |
-| [leanman](skills/leanman/) | Check Lean 4 proofs from many agents at once: exit-code verdicts, a backend that works inside a sandbox too, and kill-by-handle |
 
 ## Slash commands
 
