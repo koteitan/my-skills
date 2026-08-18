@@ -20,6 +20,8 @@ import json
 import glob
 from datetime import datetime, timezone
 
+VERSION = "1.0.4"
+
 PROJECTS_ROOT = os.path.expanduser("~/.claude/projects")
 
 # If the agent goes silent (assistant gap) longer than this within a turn, the
@@ -447,6 +449,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <style>
   body { font-family: system-ui, sans-serif; margin: 24px; color: #d4d4d4; background:#1a1a1a; }
   h1 { font-size: 18px; color:#e8e8e8; }
+  h1 .ver { color:#5a5a5a; font-size:12px; font-weight:normal; margin-left:10px; }
   .meta { color:#9a9a9a; font-size:13px; margin-bottom:16px; line-height:1.6; }
   .hint { color:#777; font-size:12px; margin-bottom:10px; }
   .chart { border:1px solid #3a3a3a; border-radius:6px; margin-bottom:14px; }
@@ -458,7 +461,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>Autonomy Statistics</h1>
+<h1>Autonomy Statistics<span class="ver">v__VERSION__</span></h1>
 <div class="hint">drag to zoom &middot; double-click to reset &middot; scroll to zoom</div>
 <div id="cBand" class="chart"></div>
 <div id="cRatio" class="chart"></div>
@@ -551,6 +554,7 @@ const AX = (function(){
             layer: 'below traces'},
     dragmode: 'zoom', hovermode: 'closest', height: 400,
     legend: {orientation:'h', x:1, xanchor:'right', y:1.10, yanchor:'bottom',
+             traceorder:'normal',   // stacked charts default to reversed
              font:{size:11}, bgcolor:'rgba(0,0,0,0)'},
     hoverlabel: {bgcolor: 'rgba(10,10,10,.95)', bordercolor: '#444',
                  font: {color: '#eee', size: 12}}
@@ -591,6 +595,7 @@ const AX = (function(){
     barmode: 'overlay', bargap: 0, showlegend: true,
     dragmode: 'zoom', hovermode: 'closest', height: 190,
     legend: {orientation:'h', x:1, xanchor:'right', y:1.10, yanchor:'bottom',
+             traceorder:'normal',   // stacked charts default to reversed
              font:{size:11}, bgcolor:'rgba(0,0,0,0)'},
     hoverlabel: {bgcolor: 'rgba(10,10,10,.95)', bordercolor: '#444',
                  font: {color: '#eee', size: 12}}
@@ -625,6 +630,7 @@ const AX = (function(){
             linecolor:'#666', zeroline:false},
     dragmode: 'zoom', hovermode: 'x unified', height: 320,
     legend: {orientation:'h', x:1, xanchor:'right', y:1.10, yanchor:'bottom',
+             traceorder:'normal',   // stacked charts default to reversed
              font:{size:11}, bgcolor:'rgba(0,0,0,0)'},
     hoverlabel: {bgcolor: 'rgba(10,10,10,.95)', bordercolor: '#444',
                  font: {color: '#eee', size: 12}}
@@ -746,6 +752,7 @@ def write_html(turns, session_path, outfile, lang="en"):
     html = (HTML_TEMPLATE
             .replace("__LANG__", lang)
             .replace("__H1__", s["h1"])
+            .replace("__VERSION__", VERSION)
             .replace("__TITLE__", os.path.basename(session_path))
             .replace("__META__", meta)
             .replace("__LABELS__", json.dumps(s["js"], ensure_ascii=False))
