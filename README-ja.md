@@ -66,6 +66,7 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [sessionmv](bin/sessionmv) | ディレクトリを Claude Code セッションごと移動。`--codex` で Codex の JSONL・状態メタデータにも対応 |
 | [newline](bin/newline) | ファイルの改行コード（CR / LF / CRLF）を判定 |
 | [nostrsocat](bin/nostrsocat) | Nostr リレー照会用の `websocat` ラッパー |
+| [codexps](bin/codexps) | `codex:rescue` ジョブを一覧し、生存中のものとプロセスが消えた記録を判別 |
 
 ## statusLine
 

@@ -66,6 +66,7 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [sessionmv](bin/sessionmv) | Move a directory with its Claude Code sessions, or use `--codex` to rewrite Codex JSONL/state metadata |
 | [newline](bin/newline) | Detect CR / LF / CRLF line endings in files |
 | [nostrsocat](bin/nostrsocat) | `websocat` wrapper for querying Nostr relays |
+| [codexps](bin/codexps) | List `codex:rescue` jobs and separate live ones from records whose process is gone |
 
 ## statusLine
 

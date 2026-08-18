@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""codexps — list codex:rescue jobs and say which are actually alive.
+
+`/codex:status` reports the status recorded in the job file, which stays
+"running" forever when the process died without cleaning up. codexps checks
+the process and the log instead:
+
+  alive        = /proc/<pid> exists
+  last active  = mtime of the job's log file
+
+Neither `ps` nor `pidstat` can tell a healthy job from a hung one: a codex
+job spends its time blocked in epoll waiting for the model, so it burns about
+0.04% CPU and shows 0 context switches per second either way. The log mtime is
+the only usable signal.
+
+It also scans BOTH state roots, because the companion writes to
+$CLAUDE_PLUGIN_DATA/state when that variable is set (normal sessions) and to
+/tmp/codex-companion otherwise, and a single `/codex:status` only ever shows
+one workspace.
+
+Usage:
+  codexps                 running / queued jobs, newest first
+  codexps -a, --all       include finished jobs
+  codexps -d, --dead      only records that claim to run but whose process is gone
+  codexps -w [SEC]        repeat every SEC seconds (default 5), Ctrl-C to stop
+  codexps --prune         mark the dead records as cancelled (never touches a live job)
+  codexps -l, --log ID    print the tail of that job's log
+  codexps -h, --help      this text
+
+States:
+  RUNNING   process alive, log touched within --stall seconds (default 180)
+  STALLED?  process alive but the log has not moved; the command shown last
+            is the one it is stuck on
+  DEAD      process gone; the "running" status is a leftover record
+"""
+import argparse
+import glob
+import json
+import os
+import sys
+import time
+
+STATE_GLOBS = [
+    os.path.expanduser("~/.claude/plugins/data/codex-openai-codex/state/*/jobs/*.json"),
+    "/tmp/codex-companion/*/jobs/*.json",
+]
+ACTIVE = ("running", "queued")
+
+
+def ago(sec):
+    if sec is None:
+        return "-"
+    if sec < 120:
+        return f"{sec}s"
+    if sec < 7200:
+        return f"{sec // 60}m"
+    return f"{sec // 3600}h{(sec % 3600) // 60:02d}m"
+
+
+def load_jobs():
+    out = []
+    for pattern in STATE_GLOBS:
+        for path in glob.glob(pattern):
+            try:
+                job = json.load(open(path, encoding="utf-8"))
+            except Exception:
+                continue
+            job["_path"] = path
+            out.append(job)
+    out.sort(key=lambda j: j.get("startedAt") or j.get("createdAt") or "", reverse=True)
+    return out
+
+
+def running_command(log):
+    """The last command with no matching completion — i.e. the one in flight."""
+    if not log or not os.path.exists(log):
+        return None
+    started = done = None
+    try:
+        with open(log, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if "Running command:" in line:
+                    started = line.split("Running command:", 1)[1].strip()
+                elif "Command completed:" in line:
+                    done = line.split("Command completed:", 1)[1].strip()
+    except Exception:
+        return None
+    if started and (done is None or not done.startswith(started[:40])):
+        return started
+    return None
+
+
+def inspect(job, now, stall):
+    pid = job.get("pid")
+    log = job.get("logFile")
+    alive = bool(pid) and os.path.isdir(f"/proc/{pid}")
+    try:
+        last = int(now - os.path.getmtime(log))
+    except Exception:
+        last = None
+    active = job.get("status") in ACTIVE
+    if not active:
+        state = (job.get("status") or "?").upper()
+    elif not alive:
+        state = "DEAD"
+    elif last is not None and last > stall:
+        state = "STALLED?"
+    else:
+        state = "RUNNING"
+    return state, pid, last, log
+
+
+def show(job, state, pid, last, log, verbose):
+    print(f"[{state:8}] {job['id']}  pid={pid}  last={ago(last)}")
+    print(f"{'':11} {job.get('workspaceRoot')}   phase={job.get('phase')}")
+    summary = (job.get("summary") or "").replace("\n", " ")[:96]
+    if summary:
+        print(f"{'':11} {summary}")
+    if state in ("RUNNING", "STALLED?"):
+        cmd = running_command(log)
+        if cmd:
+            print(f"{'':11} in flight: {cmd[:96]}")
+    if verbose and job.get("threadId"):
+        print(f"{'':11} codex resume {job['threadId']}")
+        print(f"{'':11} log {log}")
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("-a", "--all", action="store_true")
+    ap.add_argument("-d", "--dead", action="store_true")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("-w", "--watch", nargs="?", const=5, type=int)
+    ap.add_argument("-l", "--log", metavar="ID")
+    ap.add_argument("--prune", action="store_true")
+    ap.add_argument("--stall", type=int, default=180)
+    ap.add_argument("-h", "--help", action="store_true")
+    args = ap.parse_args()
+
+    if args.help:
+        print(__doc__)
+        return 0
+
+    if args.log:
+        for job in load_jobs():
+            if job["id"].startswith(args.log):
+                log = job.get("logFile")
+                if log and os.path.exists(log):
+                    sys.stdout.write(open(log, encoding="utf-8", errors="replace").read())
+                    return 0
+                print(f"codexps: no log file for {job['id']}", file=sys.stderr)
+                return 1
+        print(f"codexps: no job matching '{args.log}'", file=sys.stderr)
+        return 1
+
+    if args.prune:
+        now = time.time()
+        pruned = []
+        for job in load_jobs():
+            if job.get("status") not in ACTIVE:
+                continue
+            state, _, _, _ = inspect(job, now, args.stall)
+            if state != "DEAD":
+                continue
+            path = job.pop("_path")
+            job.update(status="cancelled", phase="cancelled", pid=None,
+                       errorMessage="Process gone; pruned by codexps.",
+                       completedAt=time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()))
+            try:
+                json.dump(job, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+                pruned.append(job["id"])
+            except Exception as e:
+                print(f"codexps: could not prune {job['id']}: {e}", file=sys.stderr)
+        for i in pruned:
+            print(f"pruned {i}")
+        print(f"codexps: {len(pruned)} dead record(s) marked cancelled", file=sys.stderr)
+        return 0
+
+    while True:
+        now = time.time()
+        shown = 0
+        for job in load_jobs():
+            active = job.get("status") in ACTIVE
+            if not active and not args.all:
+                continue
+            state, pid, last, log = inspect(job, now, args.stall)
+            if args.dead and state != "DEAD":
+                continue
+            show(job, state, pid, last, log, args.verbose)
+            shown += 1
+        if shown == 0:
+            print("(no codex jobs)" if args.all else "(no running codex jobs)")
+        if args.watch is None:
+            return 0
+        print(f"-- {time.strftime('%H:%M:%S')} (every {args.watch}s, Ctrl-C to stop) --\n")
+        time.sleep(args.watch)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
