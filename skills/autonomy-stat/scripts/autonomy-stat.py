@@ -27,6 +27,14 @@ PROJECTS_ROOT = os.path.expanduser("~/.claude/projects")
 # (tool-execution waits are handled separately).
 IDLE_THRESHOLD_MS = 5 * 60 * 1000   # 5 min
 
+# A single tool / background-agent wait longer than this is treated as an
+# abandoned session (unattended approval prompt, orphaned background task whose
+# notification only lands when the session is resumed days later) rather than
+# real work: only the first TOOLWAIT_CAP_MS counts, the rest is idle.
+# Observed data supports the cut: real builds/workflows top out around 2h,
+# then there is a gap in the distribution before the abandonment cases.
+TOOLWAIT_CAP_MS = 3 * 60 * 60 * 1000   # 3 h
+
 
 # ---------------------------------------------------------------------------
 # UI strings (only labels are localized; the analyzed data is never translated)
@@ -161,11 +169,13 @@ INJECTED_MARKERS = (
     "<task-notification>",       # background task completion notice
     "<system-reminder>",
     "<teammate-message",         # inter-session (multi-agent) message, raw
-    "Another Claude session sent a message:",  # relayed teammate message
+    "<cross-session-message",    # newer name for the same relay
+    "Another Claude session sent a message:",  # relayed peer message
 )
 # Substrings that mark a harness/inter-agent injection anywhere in the text.
 INJECTED_SUBSTRINGS = (
-    "<teammate-message",         # teammate relay (may carry a leading prefix)
+    "<teammate-message",         # peer relay (may carry a leading prefix)
+    "<cross-session-message",
 )
 # Leading text of the summary auto-inserted on compaction continuation.
 COMPACT_PREFIX = "This session is being continued from a previous conversation"
@@ -181,9 +191,11 @@ def is_genuine_user(entry):
         return False
     if entry.get("isSidechain"):          # input inside a subagent
         return False
-    # origin as a dict (kind=task-notification etc.) is a harness injection
+    # `origin` is a dict in newer Claude Code logs. kind=="human" marks a real
+    # human prompt; every other kind (task-notification, peer, ...) is injected.
+    # Older logs have no `origin` at all, so absence is not disqualifying.
     origin = entry.get("origin")
-    if isinstance(origin, dict):
+    if isinstance(origin, dict) and origin.get("kind") != "human":
         return False
     msg = entry.get("message", {})
     content = msg.get("content")
@@ -238,6 +250,21 @@ def subagent_ms(entry):
         if isinstance(d, (int, float)):
             return int(d)
     return 0
+
+
+def is_task_notification(entry):
+    """True if the entry is a background Workflow/Task completion notice.
+
+    While a background agent runs, the parent transcript is silent; the only
+    trace is this notification when it finishes.
+    """
+    origin = entry.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") == "task-notification":
+        return True
+    msg = entry.get("message", {})
+    content = msg.get("content")
+    text = content if isinstance(content, str) else ""
+    return text.lstrip().startswith("<task-notification>")
 
 
 # If a timestamp jumps backward by more than this, treat the entry as a
@@ -314,6 +341,7 @@ def parse_turns(path):
         activity = []
         n_assistant = 0
         n_tool = 0
+        n_background = 0
         sub_ms = 0
         while i < n and not is_genuine_user(entries[i]):
             e = entries[i]
@@ -326,6 +354,14 @@ def parse_turns(path):
                     activity.append((ts, "assistant"))
             elif etype == "user" and "toolUseResult" in e:
                 sub_ms += subagent_ms(e)
+                if ts is not None:
+                    activity.append((ts, "tool_result"))
+            elif etype == "user" and is_task_notification(e):
+                # A background Workflow/Task finished here. The parent logs
+                # nothing while it runs, so without this the whole background
+                # run would look like an idle assistant gap. Treat it like a
+                # tool result: the preceding gap was real (background) work.
+                n_background += 1
                 if ts is not None:
                     activity.append((ts, "tool_result"))
             i += 1
@@ -350,7 +386,12 @@ def parse_turns(path):
             if gap < 0:
                 gap = 0
             if kind == "tool_result":
-                toolwait_ms += gap                     # tool execution / approval wait
+                # tool execution / background agent run / approval wait
+                if gap <= TOOLWAIT_CAP_MS:
+                    toolwait_ms += gap
+                else:
+                    toolwait_ms += TOOLWAIT_CAP_MS     # plausible run time
+                    sleep_ms += gap - TOOLWAIT_CAP_MS  # excess = abandoned
             elif gap <= IDLE_THRESHOLD_MS:
                 work_ms += gap                         # normal generation/thinking
             else:
@@ -370,6 +411,7 @@ def parse_turns(path):
             "subagent_sec": round(sub_ms / 1000, 1),
             "n_assistant": n_assistant,
             "n_tool": n_tool,
+            "n_background": n_background,
             "prompt": prompt[:200],
         })
 
@@ -390,14 +432,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>autonomy-stat: __TITLE__</title>
+<script src="vendor/plotly.min.js"
+        onerror="this.onerror=null;this.src='https://cdn.plot.ly/plotly-2.35.2.min.js'"></script>
 <style>
   body { font-family: system-ui, sans-serif; margin: 24px; color: #d4d4d4; background:#1a1a1a; }
   h1 { font-size: 18px; color:#e8e8e8; }
   .meta { color:#9a9a9a; font-size:13px; margin-bottom:16px; line-height:1.6; }
-  canvas { background:#222; border:1px solid #3a3a3a; border-radius:6px; display:block; margin-bottom:14px; }
-  #tip { position:fixed; pointer-events:none; background:rgba(10,10,10,.95); color:#eee;
-         border:1px solid #444; font-size:12px; padding:8px 10px; border-radius:5px;
-         display:none; max-width:360px; line-height:1.5; white-space:pre-wrap; z-index:10; }
+  .hint { color:#777; font-size:12px; margin-bottom:10px; }
+  .chart { border:1px solid #3a3a3a; border-radius:6px; margin-bottom:14px; }
   table { border-collapse: collapse; margin-top:20px; font-size:13px; }
   th,td { border:1px solid #3a3a3a; padding:4px 8px; text-align:right; }
   th { background:#2c2c2c; color:#ddd; }
@@ -407,20 +449,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 <h1>autonomy-stat &mdash; __H1__</h1>
 <div class="meta">__META__</div>
-<canvas id="cTop" width="1040" height="320"></canvas>
-<canvas id="cBot" width="1040" height="320"></canvas>
-<div id="tip"></div>
+<div class="hint">drag to zoom &middot; double-click to reset &middot; scroll to zoom</div>
+<div id="cTop" class="chart"></div>
+<div id="cBot" class="chart"></div>
 <table id="tbl"></table>
 <script>
 const DATA = __DATA__;
 const L = __LABELS__;
-const HOUR = 3600, DAY_MS = 86400000;
 const C_INCL = '#ff9f40';   // tool-wait included
 const C_EXCL = '#4da3ff';   // tool-wait excluded
-const xs = DATA.map(d => d.start);
-const xmin = Math.min(...xs), xmax = Math.max(...xs);
-const xspan = (xmax - xmin) || 1;
-const tip = document.getElementById('tip');
 
 function fmtTime(ms){ return new Date(ms).toLocaleString(); }
 function fmtDur(sec){
@@ -430,98 +467,52 @@ function fmtDur(sec){
   const h = Math.floor(m/60);
   return h+'h'+(m%60)+'m';
 }
-// axis ticks: pick a "nice" step that fits the data
-const STEPS = [60,120,300,600,900,1800,3600,7200,10800,21600,43200,86400];
-function niceStep(maxv){
-  for (const s of STEPS){ if (maxv/s <= 6) return s; }
-  return STEPS[STEPS.length-1];
-}
-function fmtTick(sec){
-  if (sec % 3600 === 0) return (sec/3600)+'h';
-  if (sec % 60 === 0)   return (sec/60)+'m';
-  return sec+'s';
-}
+const XS = DATA.map(d => new Date(d.start));
+const CD = DATA.map((d,i) => [
+  i+1, fmtDur(d.active_incl_sec), fmtDur(d.active_excl_sec), fmtDur(d.toolwait_sec),
+  d.subagent_sec > 0 ? ' ('+L.tSub+' '+fmtDur(d.subagent_sec)+')' : '',
+  fmtDur(d.wall_sec),
+  d.intra_idle_sec > 0 ? ' ('+L.tSleep+' '+fmtDur(d.intra_idle_sec)+' '+L.tExcluded+')' : '',
+  d.n_assistant, d.n_tool, fmtDur(d.idle_before_sec),
+  (d.prompt||'').slice(0,90).replace(/\\n/g,' ').replace(/</g,'&lt;')
+]);
+const HOVER =
+  L.tTurn+' #%{customdata[0]}<br>'+
+  L.tStart+': %{x}<br>'+
+  L.tIncl+': %{customdata[1]}<br>'+
+  L.tExcl+': %{customdata[2]}<br>'+
+  L.tWait+': %{customdata[3]}%{customdata[4]}<br>'+
+  L.tWall+': %{customdata[5]}%{customdata[6]}<br>'+
+  L.tMsgs+': %{customdata[7]} / '+L.tTools+': %{customdata[8]}<br>'+
+  L.tIdle+': %{customdata[9]}<br>'+
+  L.tInput+': %{customdata[10]}<extra></extra>';
 
-function tipText(d, idx){
-  return L.tTurn+' #'+(idx+1)+'\\n'+
-    L.tStart+': '+fmtTime(d.start)+'\\n'+
-    L.tIncl+': '+fmtDur(d.active_incl_sec)+'\\n'+
-    L.tExcl+': '+fmtDur(d.active_excl_sec)+'\\n'+
-    L.tWait+': '+fmtDur(d.toolwait_sec)+
-    (d.subagent_sec>0 ? ' ('+L.tSub+' '+fmtDur(d.subagent_sec)+')' : '')+'\\n'+
-    L.tWall+': '+fmtDur(d.wall_sec)+
-    (d.intra_idle_sec>0 ? ' ('+L.tSleep+' '+fmtDur(d.intra_idle_sec)+' '+L.tExcluded+')' : '')+'\\n'+
-    L.tMsgs+': '+d.n_assistant+' / '+L.tTools+': '+d.n_tool+'\\n'+
-    L.tIdle+': '+fmtDur(d.idle_before_sec)+'\\n'+
-    L.tInput+': '+d.prompt;
-}
-
-function makeChart(id, accessor, color, label){
-  const cv = document.getElementById(id), ctx = cv.getContext('2d');
-  const W = cv.width, H = cv.height;
-  const M = {l:70, r:30, t:28, b:46};
-  const plotW = W-M.l-M.r, plotH = H-M.t-M.b;
-  const dataMax = Math.max(0, ...DATA.map(accessor));
-  const step = niceStep(Math.max(dataMax, 1));
-  const ymax = Math.max(step, Math.ceil(dataMax/step)*step);
-  const X = t => M.l + (t-xmin)/xspan * plotW;
-  const Y = v => M.t + plotH - (v/ymax) * plotH;
-
-  ctx.clearRect(0,0,W,H);
-  // y grid (nice step)
-  ctx.fillStyle='#9a9a9a'; ctx.font='11px sans-serif';
-  ctx.textAlign='right'; ctx.textBaseline='middle';
-  for (let v=0; v<=ymax+1; v+=step){
-    const y=Y(v); ctx.strokeStyle='#333';
-    ctx.beginPath(); ctx.moveTo(M.l,y); ctx.lineTo(W-M.r,y); ctx.stroke();
-    ctx.fillText(fmtTick(v), M.l-8, y);
-  }
-  // x grid (per day)
-  ctx.textAlign='center'; ctx.textBaseline='top';
-  const d0=new Date(xmin); d0.setHours(0,0,0,0);
-  for (let t=d0.getTime(); t<=xmax+DAY_MS; t+=DAY_MS){
-    if (t<xmin) continue;
-    const x=X(t); ctx.strokeStyle='#2c2c2c';
-    ctx.beginPath(); ctx.moveTo(x,M.t); ctx.lineTo(x,M.t+plotH); ctx.stroke();
-    const d=new Date(t); ctx.fillStyle='#9a9a9a';
-    ctx.fillText((d.getMonth()+1)+'/'+d.getDate(), x, M.t+plotH+6);
-  }
-  // axes
-  ctx.strokeStyle='#666'; ctx.beginPath();
-  ctx.moveTo(M.l,M.t); ctx.lineTo(M.l,M.t+plotH); ctx.lineTo(W-M.r,M.t+plotH); ctx.stroke();
-  // title
-  ctx.fillStyle=color; ctx.font='13px sans-serif';
-  ctx.textAlign='left'; ctx.textBaseline='middle';
-  ctx.fillText(label, M.l+12, M.t+8);
-  // line + points
-  ctx.strokeStyle=color; ctx.lineWidth=1.5; ctx.beginPath();
-  DATA.forEach((d,i)=>{ const x=X(d.start), y=Y(accessor(d));
-    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); });
-  ctx.stroke();
-  DATA.forEach(d=>{
-    ctx.beginPath(); ctx.arc(X(d.start), Y(accessor(d)), 3, 0, 7);
-    ctx.fillStyle=color; ctx.fill();
-    ctx.strokeStyle='#1a1a1a'; ctx.lineWidth=1; ctx.stroke();
-  });
-  // hover
-  cv.addEventListener('mousemove', ev=>{
-    const r=cv.getBoundingClientRect();
-    const mx=ev.clientX-r.left, my=ev.clientY-r.top;
-    let best=-1, bd=1e9;
-    DATA.forEach((d,i)=>{ const dx=X(d.start)-mx, dy=Y(accessor(d))-my;
-      const dist=dx*dx+dy*dy; if(dist<bd){bd=dist;best=i;} });
-    if(best>=0 && bd<400){
-      tip.style.display='block';
-      tip.style.left=(ev.clientX+14)+'px'; tip.style.top=(ev.clientY+14)+'px';
-      tip.textContent=tipText(DATA[best], best);
-    } else tip.style.display='none';
-  });
-  cv.addEventListener('mouseleave', ()=> tip.style.display='none');
+function draw(id, vals, color, title){
+  // y in minutes so Plotly's own auto-ticks stay readable at every zoom level
+  const trace = {
+    x: XS, y: vals.map(v => v/60), type: 'scatter', mode: 'lines+markers',
+    line: {color: color, width: 1.5}, marker: {color: color, size: 5},
+    customdata: CD, hovertemplate: HOVER, name: ''
+  };
+  const layout = {
+    title: {text: title, font: {size: 13, color: color}, x: 0.01, xanchor: 'left'},
+    paper_bgcolor: '#1a1a1a', plot_bgcolor: '#222',
+    font: {color: '#c0c0c0', size: 11},
+    margin: {l: 72, r: 24, t: 40, b: 44},
+    xaxis: {type: 'date', gridcolor: '#2c2c2c', linecolor: '#666', zeroline: false},
+    yaxis: {gridcolor: '#333', linecolor: '#666', zeroline: false, rangemode: 'tozero',
+            ticksuffix: 'm'},
+    dragmode: 'zoom', hovermode: 'closest', showlegend: false, height: 340,
+    hoverlabel: {bgcolor: 'rgba(10,10,10,.95)', bordercolor: '#444',
+                 font: {color: '#eee', size: 12}, align: 'left'}
+  };
+  Plotly.newPlot(id, [trace], layout,
+                 {responsive: true, displaylogo: false, scrollZoom: true});
 }
 
 // top = tool-wait excluded (blue), bottom = tool-wait included (orange). Independent scales.
-makeChart('cTop', d=>d.active_excl_sec, C_EXCL, L.chartExcl);
-makeChart('cBot', d=>d.active_incl_sec, C_INCL, L.chartIncl);
+draw('cTop', DATA.map(d => d.active_excl_sec), C_EXCL, L.chartExcl);
+draw('cBot', DATA.map(d => d.active_incl_sec), C_INCL, L.chartIncl);
 
 // table
 const tbl = document.getElementById('tbl');
