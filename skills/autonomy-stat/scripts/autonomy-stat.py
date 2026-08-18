@@ -60,8 +60,11 @@ STRINGS = {
                        "/compact history replays, unattended approval waits"),
         # JS labels
         "js": {
-            "chartExcl": "self-running time / turn (tool-wait excluded)",
-            "chartIncl": "self-running time / turn (tool-wait included)",
+            "chartCycle": "continuous time",
+            "chartBand": "agent running time",
+            "chartRatio": "running-time share",
+            "cA": "agent self-running",
+            "cH": "human idle",
             "tTurn": "turn", "tStart": "start",
             "tIncl": "self-running (tool-wait incl)",
             "tExcl": "self-running (tool-wait excl)",
@@ -69,10 +72,10 @@ STRINGS = {
             "tSleep": "sleep", "tExcluded": "excluded",
             "tMsgs": "assistant msgs", "tTools": "tool uses",
             "tIdle": "idle before", "tInput": "input",
-            "hStart": "start", "hIncl": "self-run (incl)",
-            "hExcl": "self-run (excl)", "hWait": "tool-wait", "hWall": "wall",
-            "hMsgs": "msgs", "hTools": "tools", "hIdle": "idle before",
-            "hInput": "input (head)",
+            "hStart": "start", "hIncl": "self-running",
+            "hExcl": "of which parent", "hWait": "of which non-parent",
+            "hIdle": "idle after",
+            "hInput": "prompt",
         },
     },
     "ja": {
@@ -91,8 +94,11 @@ STRINGS = {
         "m_min": "分",
         "m_excluded": "※ /loop スリープ・/compact 履歴リプレイ・承認待ち放置は自走から除外",
         "js": {
-            "chartExcl": "自走時間 / ターン(tool待ち抜き)",
-            "chartIncl": "自走時間 / ターン(tool待ち込み)",
+            "chartCycle": "連続時間",
+            "chartBand": "エージェント稼働時間",
+            "chartRatio": "稼働時間割合",
+            "cA": "エージェント自走時間",
+            "cH": "人間アイドル時間",
             "tTurn": "ターン", "tStart": "開始",
             "tIncl": "自走(tool待ち込み)",
             "tExcl": "自走(tool待ち抜き)",
@@ -100,10 +106,10 @@ STRINGS = {
             "tSleep": "内スリープ", "tExcluded": "除外",
             "tMsgs": "assistant応答", "tTools": "tool使用",
             "tIdle": "直前の待機", "tInput": "入力",
-            "hStart": "開始時刻", "hIncl": "自走(込)",
-            "hExcl": "自走(抜)", "hWait": "tool待ち", "hWall": "実経過",
-            "hMsgs": "応答", "hTools": "tool", "hIdle": "直前待機",
-            "hInput": "入力(先頭)",
+            "hStart": "開始時刻", "hIncl": "自走時間",
+            "hExcl": "内訳(親)", "hWait": "内訳(親以外)",
+            "hIdle": "直後待機",
+            "hInput": "プロンプト",
         },
     },
 }
@@ -421,6 +427,10 @@ def parse_turns(path):
         turns[k]["idle_before_sec"] = round(gap, 1)
     if turns:
         turns[0]["idle_before_sec"] = 0.0
+    # H_k: the wait that follows this turn (None for the last, still open)
+    for k in range(len(turns)):
+        turns[k]["idle_after_sec"] = (turns[k + 1]["idle_before_sec"]
+                                      if k + 1 < len(turns) else None)
     return turns
 
 
@@ -431,7 +441,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="__LANG__">
 <head>
 <meta charset="utf-8">
-<title>autonomy-stat: __TITLE__</title>
+<title>Autonomy Statistics: __TITLE__</title>
 <script src="vendor/plotly.min.js"
         onerror="this.onerror=null;this.src='https://cdn.plot.ly/plotly-2.35.2.min.js'"></script>
 <style>
@@ -443,21 +453,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   table { border-collapse: collapse; margin-top:20px; font-size:13px; }
   th,td { border:1px solid #3a3a3a; padding:4px 8px; text-align:right; }
   th { background:#2c2c2c; color:#ddd; }
-  td.prompt { text-align:left; max-width:420px; color:#b0b0b0; }
+  td.prompt { text-align:left; max-width:420px; color:#b0b0b0;
+              overflow-wrap:anywhere; word-break:break-word; }
 </style>
 </head>
 <body>
-<h1>autonomy-stat &mdash; __H1__</h1>
-<div class="meta">__META__</div>
+<h1>Autonomy Statistics</h1>
 <div class="hint">drag to zoom &middot; double-click to reset &middot; scroll to zoom</div>
-<div id="cTop" class="chart"></div>
-<div id="cBot" class="chart"></div>
+<div id="cBand" class="chart"></div>
+<div id="cRatio" class="chart"></div>
+<div id="cCyc" class="chart"></div>
+<div class="meta">__META__</div>
 <table id="tbl"></table>
 <script>
 const DATA = __DATA__;
 const L = __LABELS__;
-const C_INCL = '#ff9f40';   // tool-wait included
-const C_EXCL = '#4da3ff';   // tool-wait excluded
+const CY = __CYCLE__;
+const BN = __BINS__;
+const C_AGENT = '#4da3ff';  // agent self-running (same blue as the charts)
+const C_IDLE  = '#d60000';  // human idle (same red as the charts)
 
 function fmtTime(ms){ return new Date(ms).toLocaleString(); }
 function fmtDur(sec){
@@ -467,65 +481,196 @@ function fmtDur(sec){
   const h = Math.floor(m/60);
   return h+'h'+(m%60)+'m';
 }
-const XS = DATA.map(d => new Date(d.start));
-const CD = DATA.map((d,i) => [
-  i+1, fmtDur(d.active_incl_sec), fmtDur(d.active_excl_sec), fmtDur(d.toolwait_sec),
-  d.subagent_sec > 0 ? ' ('+L.tSub+' '+fmtDur(d.subagent_sec)+')' : '',
-  fmtDur(d.wall_sec),
-  d.intra_idle_sec > 0 ? ' ('+L.tSleep+' '+fmtDur(d.intra_idle_sec)+' '+L.tExcluded+')' : '',
-  d.n_assistant, d.n_tool, fmtDur(d.idle_before_sec),
-  (d.prompt||'').slice(0,90).replace(/\\n/g,' ').replace(/</g,'&lt;')
-]);
-const HOVER =
-  L.tTurn+' #%{customdata[0]}<br>'+
-  L.tStart+': %{x}<br>'+
-  L.tIncl+': %{customdata[1]}<br>'+
-  L.tExcl+': %{customdata[2]}<br>'+
-  L.tWait+': %{customdata[3]}%{customdata[4]}<br>'+
-  L.tWall+': %{customdata[5]}%{customdata[6]}<br>'+
-  L.tMsgs+': %{customdata[7]} / '+L.tTools+': %{customdata[8]}<br>'+
-  L.tIdle+': %{customdata[9]}<br>'+
-  L.tInput+': %{customdata[10]}<extra></extra>';
+// shared time axis: labels every 3 h, gridlines once a day
+const AX = (function(){
+  const t0 = Math.min(...CY.map(c => c.t)), t1 = Math.max(...CY.map(c => c.t));
+  const STEP = 3*3600*1000;
+  const first = new Date(t0);
+  first.setHours(Math.floor(first.getHours()/3)*3, 0, 0, 0);
+  const XTV = [], XTT = [], DAYS = [];
+  const p2 = n => String(n).padStart(2,'0');
+  for (let t = first.getTime(); t <= t1 + STEP; t += STEP){
+    const d = new Date(t);
+    XTV.push(t);
+    if (d.getHours() === 0){
+      XTT.push(p2(d.getMonth()+1)+'/'+p2(d.getDate())+' '+p2(d.getHours())+':00');
+      DAYS.push(t);
+    } else {
+      XTT.push(d.getHours()+':00');
+    }
+  }
+  // exact full span so the three charts line up on load (no auto padding)
+  const T0 = Math.min(...CY.map(c => c.t));
+  const T1 = Math.max(
+    Math.max(...CY.map(c => c.t + (c.A || 0)*60000 + (c.H || 0)*60000)),
+    ...BN.map(b => b.t + 3*3600*1000));
+  return {XTV: XTV, XTT: XTT, T0: T0, T1: T1,
+          daySh: DAYS.map(t => ({type:'line', x0:t, x1:t, xref:'x',
+                                 yref:'paper', y0:0, y1:1,
+                                 line:{color:'#2c2c2c', width:1}})),
+          axis: {type:'date', showgrid:false, linecolor:'#666', zeroline:false,
+                 tickvals: XTV, ticktext: XTT, range: [T0, T1], autorange: false,
+                 tickangle: -90, tickfont: {size: 9}}};
+})();
 
-function draw(id, vals, color, title){
-  // y in minutes so Plotly's own auto-ticks stay readable at every zoom level
-  const trace = {
-    x: XS, y: vals.map(v => v/60), type: 'scatter', mode: 'lines+markers',
-    line: {color: color, width: 1.5}, marker: {color: color, size: 5},
-    customdata: CD, hovertemplate: HOVER, name: ''
-  };
+// ---- per-cycle: x = t_k (prompt time), y = A_k (agent) and H_k (human idle)
+(function drawCycle(){
+  const xs = CY.map(c => new Date(c.t));
+  // linear axis with a nice step chosen from the data
+  const mx = Math.max(1, ...CY.map(c => c.A || 0), ...CY.map(c => c.H || 0));
+  const CAND = [5,10,15,30,60,120,180,240,360,480,720,1440,2880,4320];
+  let step = CAND[CAND.length-1];
+  for (const c of CAND){ if (mx/c <= 6){ step = c; break; } }
+  const top = Math.ceil(mx/step)*step;
+  const YTV = [], YTT = [];
+  for (let v = 0; v <= top+1; v += step){
+    YTV.push(v);
+    YTT.push(v === 0 ? '0'
+           : (v % 1440 === 0 ? (v/1440)+'d'
+           : (v % 60 === 0 ? (v/60)+'h' : v+'m')));
+  }
+  const traces = [
+    {x: xs, y: CY.map(c => c.A), type:'scatter', mode:'lines+markers',
+     name: L.cA, line:{color:'#4da3ff', width:1.2}, marker:{color:'#4da3ff', size:4},
+     hovertemplate: '%{x}<br>'+L.cA+': %{y:.1f} min<extra></extra>'},
+    {x: xs, y: CY.map(c => c.H), type:'scatter', mode:'lines+markers',
+     name: L.cH, line:{color:'#d60000', width:1.2}, marker:{color:'#d60000', size:4},
+     connectgaps: false,
+     hovertemplate: '%{x}<br>'+L.cH+': %{y:.1f} min<extra></extra>'}
+  ];
   const layout = {
-    title: {text: title, font: {size: 13, color: color}, x: 0.01, xanchor: 'left'},
+    title: {text: L.chartCycle, font: {size: 13, color: '#ccc'}, x: 0.01, xanchor: 'left'},
     paper_bgcolor: '#1a1a1a', plot_bgcolor: '#222',
     font: {color: '#c0c0c0', size: 11},
-    margin: {l: 72, r: 24, t: 40, b: 44},
-    xaxis: {type: 'date', gridcolor: '#2c2c2c', linecolor: '#666', zeroline: false},
-    yaxis: {gridcolor: '#333', linecolor: '#666', zeroline: false, rangemode: 'tozero',
-            ticksuffix: 'm'},
-    dragmode: 'zoom', hovermode: 'closest', showlegend: false, height: 340,
+    margin: {l: 72, r: 24, t: 62, b: 78},
+    xaxis: Object.assign({}, AX.axis),
+    // shapes default to the top layer; push them behind the traces here
+    shapes: AX.daySh.map(o => Object.assign({}, o, {layer: 'below'})),
+    yaxis: {tickvals: YTV, ticktext: YTT, range: [0, top], rangemode: 'tozero',
+            gridcolor:'#333', linecolor:'#666', zeroline:false,
+            layer: 'below traces'},
+    dragmode: 'zoom', hovermode: 'closest', height: 400,
+    legend: {orientation:'h', x:1, xanchor:'right', y:1.10, yanchor:'bottom',
+             font:{size:11}, bgcolor:'rgba(0,0,0,0)'},
     hoverlabel: {bgcolor: 'rgba(10,10,10,.95)', bordercolor: '#444',
-                 font: {color: '#eee', size: 12}, align: 'left'}
+                 font: {color: '#eee', size: 12}}
   };
-  Plotly.newPlot(id, [trace], layout,
+  Plotly.newPlot('cCyc', traces, layout,
                  {responsive: true, displaylogo: false, scrollZoom: true});
-}
+})();
 
-// top = tool-wait excluded (blue), bottom = tool-wait included (orange). Independent scales.
-draw('cTop', DATA.map(d => d.active_excl_sec), C_EXCL, L.chartExcl);
-draw('cBot', DATA.map(d => d.active_incl_sec), C_INCL, L.chartIncl);
+// ---- occupancy band: equal-height bars, colour tells who owns each stretch
+(function drawBand(){
+  const MS = 60000;
+  const agent = CY.filter(c => c.A > 0);
+  const idle  = CY.filter(c => c.H != null && c.H > 0);
+  const fmt = m => m < 60 ? m.toFixed(1)+'m'
+                          : Math.floor(m/60)+'h'+Math.round(m%60)+'m';
+  const bar = (base, dur, vals, color, name) => ({
+    type: 'bar', orientation: 'h',
+    y: base.map(() => ''), base: base, x: dur,
+    marker: {color: color, line: {width: 0}},
+    name: name, customdata: vals.map(fmt),
+    hovertemplate: name + ': %{customdata}<extra></extra>'
+  });
+  // same series order as the other two charts: agent (blue) then human idle (red)
+  const traces = [
+    bar(agent.map(c => c.t), agent.map(c => c.A*MS), agent.map(c => c.A),
+        '#4da3ff', L.cA),
+    bar(idle.map(c => c.t + c.A*MS), idle.map(c => c.H*MS), idle.map(c => c.H),
+        '#d60000', L.cH)
+  ];
+  const layout = {
+    title: {text: L.chartBand, font: {size: 13, color: '#ccc'}, x: 0.01, xanchor: 'left'},
+    paper_bgcolor: '#1a1a1a', plot_bgcolor: '#222',
+    font: {color: '#c0c0c0', size: 11},
+    margin: {l: 72, r: 24, t: 62, b: 78},
+    xaxis: Object.assign({}, AX.axis),   // labels kept, no gridlines here
+    yaxis: {showticklabels: false, showgrid: false, zeroline: false,
+            linecolor: '#666', fixedrange: true},
+    barmode: 'overlay', bargap: 0, showlegend: true,
+    dragmode: 'zoom', hovermode: 'closest', height: 190,
+    legend: {orientation:'h', x:1, xanchor:'right', y:1.10, yanchor:'bottom',
+             font:{size:11}, bgcolor:'rgba(0,0,0,0)'},
+    hoverlabel: {bgcolor: 'rgba(10,10,10,.95)', bordercolor: '#444',
+                 font: {color: '#eee', size: 12}}
+  };
+  Plotly.newPlot('cBand', traces, layout,
+                 {responsive: true, displaylogo: false, scrollZoom: true});
+})();
+
+// ---- share of the clock: stacked to 100 %, filled
+(function drawRatio(){
+  // aggregated into fixed 3 h bins, drawn as steps (each bin held to its end)
+  const BIN = 3*3600*1000;
+  const last = BN[BN.length-1];
+  const xs = BN.map(b => new Date(b.t)).concat([new Date(last.t + BIN)]);
+  const ys = key => BN.map(b => b[key]).concat([last[key]]);
+  const traces = [
+    {x: xs, y: ys('A'), type:'scatter', mode:'none', line:{shape:'hv'},
+     stackgroup:'one', groupnorm:'percent', fillcolor:'#4da3ff',
+     name: L.cA, hovertemplate: L.cA+': %{y:.1f}%<extra></extra>'},
+    {x: xs, y: ys('H'), type:'scatter', mode:'none', line:{shape:'hv'},
+     stackgroup:'one', fillcolor:'#d60000',
+     name: L.cH, hovertemplate: L.cH+': %{y:.1f}%<extra></extra>'}
+  ];
+  const layout = {
+    title: {text: L.chartRatio, font: {size: 13, color: '#ccc'}, x: 0.01, xanchor: 'left'},
+    paper_bgcolor: '#1a1a1a', plot_bgcolor: '#222',
+    font: {color: '#c0c0c0', size: 11},
+    margin: {l: 72, r: 24, t: 62, b: 78},
+    xaxis: Object.assign({}, AX.axis),
+    shapes: AX.daySh.map(o => Object.assign({}, o)),
+    yaxis: {range: [0, 100], ticksuffix: '%', gridcolor:'#333',
+            linecolor:'#666', zeroline:false},
+    dragmode: 'zoom', hovermode: 'x unified', height: 320,
+    legend: {orientation:'h', x:1, xanchor:'right', y:1.10, yanchor:'bottom',
+             font:{size:11}, bgcolor:'rgba(0,0,0,0)'},
+    hoverlabel: {bgcolor: 'rgba(10,10,10,.95)', bordercolor: '#444',
+                 font: {color: '#eee', size: 12}}
+  };
+  Plotly.newPlot('cRatio', traces, layout,
+                 {responsive: true, displaylogo: false, scrollZoom: true});
+})();
+
+// ---- keep the three x axes in sync (zoom one, the others follow)
+(function linkX(){
+  const IDS = ['cCyc', 'cBand', 'cRatio'];
+  let syncing = false;                 // guard: our own relayout must not recurse
+  IDS.forEach(id => {
+    const gd = document.getElementById(id);
+    if (!gd || !gd.on) return;
+    gd.on('plotly_relayout', ev => {
+      if (syncing || !ev) return;
+      let upd;
+      if (ev['xaxis.range[0]'] !== undefined && ev['xaxis.range[1]'] !== undefined){
+        upd = {'xaxis.range[0]': ev['xaxis.range[0]'],
+               'xaxis.range[1]': ev['xaxis.range[1]']};
+      } else if (ev['xaxis.autorange'] === true){
+        upd = {'xaxis.autorange': true};
+      } else {
+        return;                        // legend clicks etc. are not x changes
+      }
+      syncing = true;
+      Promise.all(IDS.filter(o => o !== id)
+                     .map(o => Plotly.relayout(o, upd)))
+             .then(() => { syncing = false; })
+             .catch(() => { syncing = false; });
+    });
+  });
+})();
 
 // table
 const tbl = document.getElementById('tbl');
-let html = '<tr><th>#</th><th>'+L.hStart+'</th><th>'+L.hIncl+'</th><th>'+L.hExcl+'</th><th>'+L.hWait+'</th>'+
-           '<th>'+L.hWall+'</th><th>'+L.hMsgs+'</th><th>'+L.hTools+'</th><th>'+L.hIdle+'</th><th>'+L.hInput+'</th></tr>';
+let html = '<tr><th>#</th><th>'+L.hStart+'</th><th>'+L.hIncl+'</th><th>'+L.hExcl+'</th>'+
+           '<th>'+L.hWait+'</th><th>'+L.hIdle+'</th><th>'+L.hInput+'</th></tr>';
 DATA.forEach((d,i)=>{
   html += '<tr><td>'+(i+1)+'</td><td>'+fmtTime(d.start)+'</td>'+
-    '<td style="color:'+C_INCL+'">'+fmtDur(d.active_incl_sec)+'</td>'+
-    '<td style="color:'+C_EXCL+'">'+fmtDur(d.active_excl_sec)+'</td>'+
+    '<td style="color:'+C_AGENT+'">'+fmtDur(d.active_incl_sec)+'</td>'+
+    '<td>'+fmtDur(d.active_excl_sec)+'</td>'+
     '<td>'+fmtDur(d.toolwait_sec)+'</td>'+
-    '<td>'+fmtDur(d.wall_sec)+'</td>'+
-    '<td>'+d.n_assistant+'</td><td>'+d.n_tool+'</td>'+
-    '<td>'+fmtDur(d.idle_before_sec)+'</td>'+
+    '<td style="color:'+C_IDLE+'">'+
+      (d.idle_after_sec == null ? '-' : fmtDur(d.idle_after_sec))+'</td>'+
     '<td class="prompt">'+escapeHtml(d.prompt)+'</td></tr>';
 });
 tbl.innerHTML = html;
@@ -534,6 +679,50 @@ function escapeHtml(s){ return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&l
 </body>
 </html>
 """
+
+
+BIN_MS = 3 * 60 * 60 * 1000   # 3 h bins for the share chart
+
+
+def bin_series(turns, bin_ms=BIN_MS):
+    """Agent vs human-idle minutes per fixed 3 h bin.
+
+    Each interval is split at the bin edges, so a long stretch contributes to
+    every bin it covers. Bins align to 0:00/3:00/... local time (JST offset is
+    a whole multiple of the bin size).
+    """
+    bins = {}
+
+    def add(t0, t1, idx):
+        while t0 < t1:
+            b = (t0 // bin_ms) * bin_ms
+            nxt = min(b + bin_ms, t1)
+            bins.setdefault(b, [0.0, 0.0])[idx] += nxt - t0
+            t0 = nxt
+
+    for i, t in enumerate(turns):
+        add(t["start"], t["end"], 0)
+        if i + 1 < len(turns):
+            add(t["end"], turns[i + 1]["start"], 1)
+    return [{"t": b, "A": round(v[0] / 60000, 2), "H": round(v[1] / 60000, 2)}
+            for b, v in sorted(bins.items())]
+
+
+def cycle_series(turns):
+    """Per cycle k: t_k = prompt time, A_k = a_k - t_k, H_k = h_k - a_k (minutes).
+
+    a_k is when the agent went quiet (turn end); h_k is the next human prompt,
+    so the last cycle has no H_k.
+    """
+    out = []
+    for i, t in enumerate(turns):
+        nxt = turns[i + 1]["start"] if i + 1 < len(turns) else None
+        out.append({
+            "t": t["start"],
+            "A": round(t["wall_sec"] / 60, 2),
+            "H": round((nxt - t["end"]) / 60000, 2) if nxt is not None else None,
+        })
+    return out
 
 
 def write_html(turns, session_path, outfile, lang="en"):
@@ -560,6 +749,8 @@ def write_html(turns, session_path, outfile, lang="en"):
             .replace("__TITLE__", os.path.basename(session_path))
             .replace("__META__", meta)
             .replace("__LABELS__", json.dumps(s["js"], ensure_ascii=False))
+            .replace("__CYCLE__", json.dumps(cycle_series(turns)))
+            .replace("__BINS__", json.dumps(bin_series(turns)))
             .replace("__DATA__", json.dumps(turns, ensure_ascii=False)))
     with open(outfile, "w", encoding="utf-8") as f:
         f.write(html)
