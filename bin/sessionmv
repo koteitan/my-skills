@@ -1,16 +1,29 @@
 #!/bin/bash
-# sessionmv <a> <b>
-# Move directory <a> to <b>, and also move the corresponding Claude Code
-# project directories under ~/.claude/projects/ (including ones for
-# subdirectories of <a>), rewriting "cwd" paths inside session JSONL files.
+# sessionmv [--codex] <a> <b>
+# Move directory <a> to <b> together with the corresponding Claude Code
+# (default) or Codex (--codex) session metadata.
 set -euo pipefail
 
 PROJECTS_DIR="$HOME/.claude/projects"
 
 usage() {
-  echo "usage: sessionmv <a> <b>" >&2
+  echo "usage: sessionmv [--codex] <a> <b>" >&2
   exit 1
 }
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  echo "usage: sessionmv [--codex] <a> <b>"
+  echo "       default: move Claude Code session metadata"
+  echo "       --codex: move Codex session metadata"
+  exit 0
+fi
+
+if [ "${1:-}" = "--codex" ]; then
+  shift
+  [ $# -eq 2 ] || usage
+  script_dir="$(dirname "$(realpath "$0")")"
+  exec python3 "$script_dir/sessionmv-codex.py" "$1" "$2"
+fi
 
 [ $# -eq 2 ] || usage
 

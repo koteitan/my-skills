@@ -63,7 +63,7 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [live-server-list](bin/live-server-list) | 動作中の `live-server` を PID・URL・配信ディレクトリで一覧表示 |
 | [live-server-kill](bin/live-server-kill) | 動作中の `live-server` を停止（唯一のインスタンス、または port 指定） |
 | [sessiondb](bin/sessiondb) | Claude Code セッション JSONL ログの SQLite + FTS5 インデックス構築と検索 |
-| [sessionmv](bin/sessionmv) | ディレクトリを対応する全 `~/.claude/projects/` セッションごと移動し JSONL 内の `cwd` を書き換え |
+| [sessionmv](bin/sessionmv) | ディレクトリを Claude Code セッションごと移動。`--codex` で Codex の JSONL・状態メタデータにも対応 |
 | [newline](bin/newline) | ファイルの改行コード（CR / LF / CRLF）を判定 |
 | [nostrsocat](bin/nostrsocat) | Nostr リレー照会用の `websocat` ラッパー |
 

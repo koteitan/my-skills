@@ -63,7 +63,7 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [live-server-list](bin/live-server-list) | List running `live-server` instances: PID, URL, serving directory |
 | [live-server-kill](bin/live-server-kill) | Kill a running `live-server` (sole instance, or by port) |
 | [sessiondb](bin/sessiondb) | Build and query a SQLite + FTS5 index over Claude Code session JSONL logs |
-| [sessionmv](bin/sessionmv) | Move a directory with all its `~/.claude/projects/` session dirs, rewriting `cwd` in JSONL |
+| [sessionmv](bin/sessionmv) | Move a directory with its Claude Code sessions, or use `--codex` to rewrite Codex JSONL/state metadata |
 | [newline](bin/newline) | Detect CR / LF / CRLF line endings in files |
 | [nostrsocat](bin/nostrsocat) | `websocat` wrapper for querying Nostr relays |
 
