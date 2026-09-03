@@ -1,0 +1,14 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Editor / OS noise
+*.swp
+.DS_Store
+
+# Scratch: the staging area for /commit messages, not a tracked file
+commit-msg.txt
+
+# Runtime logs written by the skills themselves
+skills/sessiondb/log.txt
+*.log
