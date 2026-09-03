@@ -22,6 +22,8 @@ measure the delivered string.
 | `$a \, b$` | `$a , b$` | **a stray comma is rendered** |
 | `` $`\{x\}`$ ``, `` $`a \, b`$ `` | unchanged | ✅ code span is not escaped |
 | ```` ```math ```` fence | contents kept, except `\\` | ✅ for display math |
+| `- item` + indented ```` ```math ```` fence | `<pre lang="math">`, **not** upgraded to `<math-renderer>` | display math inside a list item shows raw LaTeX |
+| `[^1]: … $\`x\`$ …` | not upgraded to `<math-renderer>` | math inside a footnote definition is not rendered |
 
 So the safe forms are:
 
@@ -30,6 +32,14 @@ So the safe forms are:
 * row breaks → `\cr` (never `\\`)
 * `<` and `>` in **inline** math → `\lt`, `\gt` (inside a fence they are fine)
 * never write `$` anywhere inside math — not in `\text{…}`, not in `\tag{…}`
+* math inside a **list item** or a **footnote** → inline `` $`…`$ `` only; a ```` ```math ````
+  fence there is served as a plain code block. For a long formula use
+  `` $`\begin{aligned} … \cr … \end{aligned}`$ `` on its own line.
+
+Counting catches both silently: when `check-github.js` reports **fewer** formulas than
+`check-local.js`, the difference is unrendered math, not a false alarm — the page shows no
+error, just raw LaTeX. Diff the two formula lists to find which ones. (Measured 2026-08 on
+one file: 8 lost to list items, 5 to footnotes; both were invisible to the error count.)
 
 ## Scripts (start here)
 
