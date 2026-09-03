@@ -3,9 +3,11 @@
 # Line 1: host:dir
 # Line 2: <m>ctx:[bar] 5h:[bar]>ETA w:[bar]>ETA <model> <effort>
 #
-# <m> is a two-letter model tag in the leftmost column, so the current model is
+# <m> is a short model tag in the leftmost column, so the current model is
 # readable without scanning to the end of the line:
-#   "o5 " opus-5 / "s5 " sonnet-5 / "f5 " fable-5 / "" anything else
+#   "o5 " opus-5   / "s5 " sonnet-5   / "f5 " fable-5
+#   "o51 " opus-5.1 / "s51 " sonnet-5.1 / "f51 " fable-5.1
+#   "" anything else
 # Unknown models contribute nothing at all (not even a space), so the line
 # simply starts at "ctx:".
 #
@@ -182,13 +184,18 @@ week_eta_disp=$(eta_disp "$(forecast 3 5 "$week" "$wr")" "$wr")
 model_display=""
 [ -n "$model_id" ] && model_display=$(printf '\033[01;36m%s\033[00m' "$model_id")
 
-# Leftmost two-letter tag. The dated variants (claude-opus-5-20260101) are
+# Leftmost short tag. Point releases get their own tag (claude-fable-5-1 ->
+# "f51") and must be listed before the base "-5-*" patterns, which would
+# otherwise swallow them. The dated variants (claude-opus-5-20260101) are
 # matched too, so the tag does not silently vanish if the id gains a date.
 model_short=""
 case "$model_id" in
-  claude-opus-5|claude-opus-5-*)     model_short='o5' ;;
-  claude-sonnet-5|claude-sonnet-5-*) model_short='s5' ;;
-  claude-fable-5|claude-fable-5-*)   model_short='f5' ;;
+  claude-opus-5-1|claude-opus-5-1-*)     model_short='o51' ;;
+  claude-sonnet-5-1|claude-sonnet-5-1-*) model_short='s51' ;;
+  claude-fable-5-1|claude-fable-5-1-*)   model_short='f51' ;;
+  claude-opus-5|claude-opus-5-*)         model_short='o5'  ;;
+  claude-sonnet-5|claude-sonnet-5-*)     model_short='s5'  ;;
+  claude-fable-5|claude-fable-5-*)       model_short='f5'  ;;
 esac
 model_short_display=""
 [ -n "$model_short" ] && \

@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""maxtok-scan -- find responses that were cut off by the output-token limit.
+
+A response whose stop_reason is "max_tokens" hit the per-response output cap.
+Claude Code silently retries it, and the cut-off content is NOT carried into the
+retry: the work is thrown away and redone from the same state. Two or three of
+these in a row look, from the outside, like the agent has gone silent.
+
+This scans every Claude Code session log under ~/.claude/projects and reports
+each cut-off, so you can see which projects and which models are affected.
+
+Usage:
+  maxtok-scan                       # all projects, one line per cut-off
+  maxtok-scan -s                    # per-project summary instead
+  maxtok-scan -d 7                  # only the last 7 days
+  maxtok-scan -p trio               # only projects whose path matches "trio"
+  maxtok-scan -m fable              # only models whose id matches "fable"
+  maxtok-scan --json                # JSONL, one object per cut-off
+
+Columns: date/time (local), out= tokens emitted, think= of which were thinking,
+gap= seconds spent on the wasted response, model, project, session id.
+"""
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+
+PROJECTS = os.path.expanduser("~/.claude/projects")
+NEEDLE = '"stop_reason":"max_tokens"'
+
+
+def parse_ts(s):
+    """ISO-8601 with trailing Z -> aware datetime."""
+    if not s:
+        return None
+    try:
+        return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def project_label(path):
+    """~/.claude/projects/-home-koteitan-proofs-trio/xxx.jsonl -> proofs/trio"""
+    d = os.path.basename(os.path.dirname(path))
+    d = re.sub(r"^-home-[^-]+-", "", d)
+    return d.replace("-", "/") or os.path.basename(os.path.dirname(path))
+
+
+def candidate_files():
+    """Files containing the needle at all -- grep prefilter, then parse only those."""
+    try:
+        out = subprocess.run(
+            ["grep", "-rl", "--include=*.jsonl", "-F", NEEDLE, PROJECTS],
+            capture_output=True, text=True, timeout=600,
+        ).stdout
+        return [p for p in out.splitlines() if p]
+    except (OSError, subprocess.SubprocessError):
+        hits = []
+        for root, _, names in os.walk(PROJECTS):
+            for n in names:
+                if n.endswith(".jsonl"):
+                    hits.append(os.path.join(root, n))
+        return hits
+
+
+def scan_file(path):
+    """Yield one dict per cut-off response found in this session log.
+
+    `gap` is the wall-clock time from the previous logged event to the cut-off,
+    i.e. how long was spent producing the response that then got thrown away.
+    """
+    events = []
+    prev_ts = None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                hit = NEEDLE in line
+                if not hit and '"timestamp"' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                ts = parse_ts(rec.get("timestamp"))
+                msg = rec.get("message") or {}
+                if hit and isinstance(msg, dict) and msg.get("stop_reason") == "max_tokens":
+                    usage = msg.get("usage") or {}
+                    details = usage.get("output_tokens_details") or {}
+                    events.append({
+                        "ts": ts,
+                        "out": usage.get("output_tokens") or 0,
+                        "thinking": details.get("thinking_tokens") or 0,
+                        "cache_read": usage.get("cache_read_input_tokens") or 0,
+                        "model": msg.get("model") or "?",
+                        "request_id": rec.get("requestId") or "",
+                        "session": os.path.basename(path)[:-6],
+                        "project": project_label(path),
+                        "path": path,
+                        "gap": int((ts - prev_ts).total_seconds())
+                               if ts and prev_ts and ts > prev_ts else 0,
+                    })
+                if ts:
+                    prev_ts = ts
+    except OSError as exc:
+        print("skip %s: %s" % (path, exc), file=sys.stderr)
+    return events
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Find responses cut off by the output-token limit.")
+    ap.add_argument("-d", "--days", type=float,
+                    help="only cut-offs within the last N days")
+    ap.add_argument("-p", "--project", help="substring match on the project path")
+    ap.add_argument("-m", "--model", help="substring match on the model id")
+    ap.add_argument("-s", "--summary", action="store_true",
+                    help="per-project summary instead of one line each")
+    ap.add_argument("--json", action="store_true", dest="as_json",
+                    help="emit JSONL, one object per cut-off")
+    ap.add_argument("--root", default=PROJECTS, help="projects directory")
+    args = ap.parse_args()
+
+    globals()["PROJECTS"] = os.path.expanduser(args.root)
+    if not os.path.isdir(PROJECTS):
+        sys.exit("no such directory: %s" % PROJECTS)
+
+    cutoff = None
+    if args.days:
+        cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.days)
+
+    events = []
+    for path in candidate_files():
+        for ev in scan_file(path):
+            if cutoff and (not ev["ts"] or ev["ts"] < cutoff):
+                continue
+            if args.project and args.project not in ev["project"]:
+                continue
+            if args.model and args.model not in ev["model"]:
+                continue
+            events.append(ev)
+
+    events.sort(key=lambda e: (e["ts"] or dt.datetime.min.replace(
+        tzinfo=dt.timezone.utc)))
+
+    if args.as_json:
+        for ev in events:
+            out = dict(ev)
+            out["ts"] = ev["ts"].isoformat() if ev["ts"] else None
+            print(json.dumps(out, ensure_ascii=False))
+        return
+
+    if not events:
+        print("no cut-offs found")
+        return
+
+    if args.summary:
+        per = {}
+        for ev in events:
+            key = (ev["project"], ev["model"])
+            agg = per.setdefault(key, {"n": 0, "out": 0, "gap": 0,
+                                       "first": ev["ts"], "last": ev["ts"]})
+            agg["n"] += 1
+            agg["out"] += ev["out"]
+            agg["gap"] += ev["gap"]
+            if ev["ts"]:
+                if not agg["first"] or ev["ts"] < agg["first"]:
+                    agg["first"] = ev["ts"]
+                if not agg["last"] or ev["ts"] > agg["last"]:
+                    agg["last"] = ev["ts"]
+        print("%-28s %-22s %5s %11s %9s  %s" %
+              ("project", "model", "cut", "tokens lost", "time lost", "last"))
+        rows = sorted(per.items(), key=lambda kv: -kv[1]["n"])
+        for (project, model), agg in rows:
+            last = agg["last"].astimezone().strftime("%m/%d %H:%M") if agg["last"] else "?"
+            print("%-28s %-22s %5d %11d %8dm  %s" %
+                  (project[:28], model[:22], agg["n"], agg["out"],
+                   agg["gap"] // 60, last))
+        total_n = sum(a["n"] for a in per.values())
+        total_gap = sum(a["gap"] for a in per.values())
+        print("-" * 86)
+        print("%d cut-offs, %d tokens discarded, about %d minutes of wasted work"
+              % (total_n, sum(a["out"] for a in per.values()), total_gap // 60))
+        return
+
+    print("%-16s %8s %8s %6s  %-22s %-24s %s" %
+          ("when", "out", "think", "gap", "model", "project", "session"))
+    for ev in events:
+        when = ev["ts"].astimezone().strftime("%Y-%m-%d %H:%M") if ev["ts"] else "?"
+        print("%-16s %8d %8d %5ds  %-22s %-24s %s" %
+              (when, ev["out"], ev["thinking"], ev["gap"],
+               ev["model"][:22], ev["project"][:24], ev["session"][:8]))
+    total_gap = sum(e["gap"] for e in events)
+    print("-" * 100)
+    print("%d cut-offs, %d tokens discarded, about %d minutes of wasted work"
+          % (len(events), sum(e["out"] for e in events), total_gap // 60))
+
+
+if __name__ == "__main__":
+    main()
