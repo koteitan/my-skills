@@ -47,6 +47,13 @@ Decide in this order, and stop at the first hit:
 4. Did we **detour**? → **S** if the claim barely moved and nothing downstream changed,
    otherwise 🌳**U**.
 
+**A step the article settles by citing another paper, and the formalization proves
+instead, is `W`.** The omission is the article's; replacing a citation with a proof is not
+a detour of ours. It becomes 🌳`U` only when the formalization also swaps the cited
+*object* for one of its own and never proves the two agree — then the claim itself has
+moved, and that is what gets recorded, on the item where the substituted object reaches
+the statement.
+
 `X`/`Y` become corrections to send to the author. `Z`/`W` are gaps in the article. `R` is
 redundancy in the article. `S`/`U` are ours, and `U` is the backlog: each one is either
 something still to fix or a structural obstacle to record.
