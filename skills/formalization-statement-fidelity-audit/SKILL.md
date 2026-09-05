@@ -32,7 +32,7 @@ finding bullets on each page, and the IDs in the index.
 | 🚨**X** | formalizing the article as written yields a contradiction; essential or large | article — a real error |
 | ⚠️**Y** | formalizing the article as written yields a contradiction; a slip of the pen | article — a typo |
 | 🚨**Z** | the article's proof has a gap; the gap is essential and large | article — missing mathematics |
-| **W** | the article's proof has a gap; small enough to be filled inside the formalization | article — an "obviously" |
+| **W** | the article skips steps the formalization must take, as papers normally do; the gap is small | article — an "obviously" |
 | **S** | a detour, but the difference from the article's claim is small and nothing downstream changes | ours — benign |
 | **R** | part of the article's proof is not needed; the proof goes through without it | article — redundancy |
 | 🌳**U** | could not be written the article's way for formalization reasons, so it detours | ours — a real deviation |
@@ -162,7 +162,7 @@ Assign each finding a stable ID `<class>-<n>`, numbered per class in page order.
 | 🚨**X** | 原文をそのまま形式化すると矛盾する。本質的、または規模が大きい | 0 |
 | ⚠️**Y** | 原文をそのまま形式化すると矛盾する。誤記の類 | 2 |
 | 🚨**Z** | 原文に飛躍がある。飛躍が本質的で大きい | 0 |
-| **W** | 原文に飛躍がある。形式化の範疇に収まる小さいもの | 22 |
+| **W** | 形式化に比べると原文に飛躍があるが、通常通り小さいもの | 22 |
 | **S** | 迂回だが原文の主張との差が小さく、下流の内容を変えない | 0 |
 | **R** | 原文の証明の一部が無くても証明が通る | 36 |
 | 🌳**U** | 形式化の都合で原文どおりに書けず迂回している | 74 |
