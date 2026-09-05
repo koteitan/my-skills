@@ -23,26 +23,29 @@ an article with 60 `R`s is over-proved; one with 3 `X`s is broken.
 ## The classification (the point of the whole exercise)
 
 Every difference gets exactly one class. Classify the **difference**, not the page — one
-page usually carries several.
+page usually carries several. `X` and `Z` carry a 🚨 prefix, `Y` a ⚠️, `U` a 🌳; `W`, `S`
+and `R` carry none. Write the prefix everywhere the class appears — the table below, the
+finding bullets on each page, and the IDs in the index.
 
 | class | condition | whose problem |
 |---|---|---|
-| **X** | formalizing the article as written yields a contradiction; essential or large | article — a real error |
-| **Y** | formalizing the article as written yields a contradiction; a slip of the pen | article — a typo |
-| **Z** | the article's proof has a gap; the gap is essential and large | article — missing mathematics |
+| 🚨**X** | formalizing the article as written yields a contradiction; essential or large | article — a real error |
+| ⚠️**Y** | formalizing the article as written yields a contradiction; a slip of the pen | article — a typo |
+| 🚨**Z** | the article's proof has a gap; the gap is essential and large | article — missing mathematics |
 | **W** | the article's proof has a gap; small enough to be filled inside the formalization | article — an "obviously" |
 | **S** | a detour, but the difference from the article's claim is small and nothing downstream changes | ours — benign |
 | **R** | part of the article's proof is not needed; the proof goes through without it | article — redundancy |
-| **U** | could not be written the article's way for formalization reasons, so it detours | ours — a real deviation |
+| 🌳**U** | could not be written the article's way for formalization reasons, so it detours | ours — a real deviation |
 
 Decide in this order, and stop at the first hit:
 
-1. Is the article's statement **false** as written? → **X** if essential or large, **Y** if a typo.
-2. Is the statement true but the **proof incomplete**? → **Z** if the gap is essential and
+1. Is the article's statement **false** as written? → 🚨**X** if essential or large,
+   ⚠️**Y** if a typo.
+2. Is the statement true but the **proof incomplete**? → 🚨**Z** if the gap is essential and
    large, **W** if the formalization fills it with routine work.
 3. Did the formalization **not need** part of the article's proof? → **R**.
 4. Did we **detour**? → **S** if the claim barely moved and nothing downstream changed,
-   otherwise **U**.
+   otherwise 🌳**U**.
 
 `X`/`Y` become corrections to send to the author. `Z`/`W` are gaps in the article. `R` is
 redundancy in the article. `S`/`U` are ours, and `U` is the backlog: each one is either
@@ -156,29 +159,35 @@ Assign each finding a stable ID `<class>-<n>`, numbered per class in page order.
 
 | 分類 | 条件 | 件数 |
 |---|---|---|
-| **X** | 原文をそのまま形式化すると矛盾する。本質的、または規模が大きい | 0 |
-| **Y** | 原文をそのまま形式化すると矛盾する。誤記の類 | 2 |
-| **Z** | 原文に飛躍がある。飛躍が本質的で大きい | 0 |
+| 🚨**X** | 原文をそのまま形式化すると矛盾する。本質的、または規模が大きい | 0 |
+| ⚠️**Y** | 原文をそのまま形式化すると矛盾する。誤記の類 | 2 |
+| 🚨**Z** | 原文に飛躍がある。飛躍が本質的で大きい | 0 |
 | **W** | 原文に飛躍がある。形式化の範疇に収まる小さいもの | 22 |
 | **S** | 迂回だが原文の主張との差が小さく、下流の内容を変えない | 0 |
 | **R** | 原文の証明の一部が無くても証明が通る | 36 |
-| **U** | 形式化の都合で原文どおりに書けず迂回している | 74 |
+| 🌳**U** | 形式化の都合で原文どおりに書けず迂回している | 74 |
 | | **合計** | **134** |
 
 ## 項目
 
+W と S は件数が多く、どの項目にもあるので、この表には出さない。
+
 | # | 項目 | 指摘 |
 |---|---|---|
 | [01](01-....md) | 系（…） | — |
-| [02](02-....md) | 命題（…） | W-1, U-3 |
+| [02](02-....md) | 命題（…） | ⚠️Y-1, 🌳U-3 |
 
 ## 指摘一覧
 
 | ID | 項目 | 要旨 |
 |---|---|---|
+| ⚠️Y-1 | [02](02-....md) | … |
 | W-1 | [02](02-....md) | … |
-| U-3 | [02](02-....md) | … |
+| 🌳U-3 | [02](02-....md) | … |
 ```
+
+The 項目 table lists only 🚨`X` / ⚠️`Y` / 🚨`Z` / `R` / 🌳`U`; `W` and `S` are too numerous
+and too evenly spread to carry information there. The 指摘一覧 stays complete.
 
 IDs exist so findings can be referred to from outside. When you refresh a page, keep the
 IDs of findings that persist; do not renumber the whole file.
