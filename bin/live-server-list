@@ -6,8 +6,28 @@
 ipaddr=$(hostname -I 2>/dev/null | awk '{print $1}')
 [ -z "$ipaddr" ] && ipaddr=127.0.0.1
 
+# A live-server binds a WSL address, which only this machine can reach. When
+# Windows forwards the port from the LAN (see wsl-port-open), the Windows
+# address is the better one to print: it works here and from a phone alike.
+# Asking Windows costs a moment, so do it once, and only if a server is found.
+lan_forwards=""
+lan_ip=""
+lan_url() {                       # lan_url <port> -> Windows URL, or nothing
+    [ -z "$lan_ip" ] && return 1
+    printf '%s\n' "$lan_forwards" | grep -qx "$1" || return 1
+    printf 'http://%s:%s\n' "$lan_ip" "$1"
+}
+
+pids=$(pgrep -f 'node .*live-server' 2>/dev/null)
+if [ -n "$pids" ]; then
+    lan_forwards=$(netsh.exe interface portproxy show v4tov4 2>/dev/null |
+        tr -d '\r' | awk '
+            $1 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $2 ~ /^[0-9]+$/ { print $2 }')
+    lan_ip=$(wsl-win-ip 2>/dev/null)
+fi
+
 found=0
-for pid in $(pgrep -f 'node .*live-server' 2>/dev/null); do
+for pid in $pids; do
     cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
     case "$cmd" in
         *live-server*) ;;
@@ -18,6 +38,7 @@ for pid in $(pgrep -f 'node .*live-server' 2>/dev/null); do
     host=$(printf '%s\n' "$cmd" | grep -oE -- '--host=[^ ]+' | head -n1 | cut -d= -f2)
     [ -z "$host" ] && host="$ipaddr"
     url="http://$host:$port"
+    lan=$(lan_url "$port") && url="$lan"
     dir=$(readlink -f "/proc/$pid/cwd" 2>/dev/null)
     if [ "$found" -eq 0 ]; then
         printf '%-8s %-30s %s\n' PID URL DIR

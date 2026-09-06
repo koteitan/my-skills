@@ -1,0 +1,156 @@
+#!/bin/bash
+# wsl-port-open [-q] [-n] PORT [PORT...]
+# wsl-port-open [-q] [-n] A-B
+#
+# Make a TCP port of a server running inside WSL reachable from the LAN, so a
+# phone or another machine can open http://<windows lan ip>:<port>/.
+#
+# WSL2 is a NAT'd VM: a socket bound inside it is invisible to the LAN. Two
+# things on the Windows side are needed, and both are missing by default:
+#   1. a portproxy entry   0.0.0.0:PORT -> <wsl eth0 ip>:PORT
+#   2. an inbound firewall allow rule for TCP PORT
+# Windows blocks inbound by default and this machine's LAN adapter is in the
+# Public profile, so 1 without 2 still fails silently.
+#
+# Both changes need Administrator. They are permanent, so the cost is one UAC
+# prompt the first time a given port is used -- never again for that port. When
+# nothing is missing this exits 0 without prompting and without printing.
+#
+# The portproxy target is the WSL address, which can change when WSL restarts.
+# An entry left pointing at an old address is detected and rewritten, so a
+# stale forward repairs itself instead of failing silently.
+#
+#   -q  quiet: say nothing when there is nothing to do, or when it worked.
+#       The line explaining an incoming UAC prompt is always printed -- a
+#       dialog appearing with no explanation is worse than one extra line.
+#   -n  dry run: report what would change, prompt for nothing
+
+QUIET=0
+DRYRUN=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -q) QUIET=1; shift ;;
+        -n) DRYRUN=1; shift ;;
+        --) shift; break ;;
+        -*) echo "wsl-port-open: unknown option $1" >&2; exit 2 ;;
+        *)  break ;;
+    esac
+done
+
+[ $# -eq 0 ] && { echo "usage: wsl-port-open [-q] [-n] PORT [PORT...] | A-B" >&2; exit 2; }
+
+# ------------------------------------------------------------------ arguments
+ports=()
+add_port() {
+    case "$1" in
+        ''|*[!0-9]*) echo "wsl-port-open: not a port: $1" >&2; exit 2 ;;
+    esac
+    if [ "$1" -lt 1 ] || [ "$1" -gt 65535 ]; then
+        echo "wsl-port-open: port out of range: $1" >&2; exit 2
+    fi
+    ports+=("$1")
+}
+for arg in "$@"; do
+    case "$arg" in
+        *-*)
+            lo=${arg%%-*}; hi=${arg##*-}
+            add_port "$lo"; add_port "$hi"
+            unset 'ports[-1]'; unset 'ports[-1]'
+            if [ "$lo" -gt "$hi" ]; then
+                echo "wsl-port-open: empty range: $arg" >&2; exit 2
+            fi
+            if [ $(( hi - lo )) -gt 63 ]; then
+                echo "wsl-port-open: range too wide (max 64 ports): $arg" >&2; exit 2
+            fi
+            for ((p = lo; p <= hi; p++)); do add_port "$p"; done
+            ;;
+        *) add_port "$arg" ;;
+    esac
+done
+
+# ------------------------------------------------------------------ wsl address
+wsl_ip=$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+if [ -z "$wsl_ip" ]; then
+    echo "wsl-port-open: no IPv4 address on eth0" >&2; exit 1
+fi
+
+# ------------------------------------------------------------------ current state
+# portproxy table -> "listenport connectaddress connectport" per row. The header
+# is localised, so match on the shape of the row rather than on any label.
+pp=$(netsh.exe interface portproxy show v4tov4 2>/dev/null | tr -d '\r' | awk '
+    $1 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $2 ~ /^[0-9]+$/ &&
+    $3 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $4 ~ /^[0-9]+$/ { print $2, $3, $4 }')
+
+# Existing firewall rules. Rules added by hand here are named "WSL Port 9001";
+# this script writes the space-free "WSL-Port-9001" so the elevated command
+# needs no quoting. Accept either spelling as "already allowed".
+fw=$(powershell.exe -NoProfile -Command \
+      "Get-NetFirewallRule -Direction Inbound -Action Allow -ErrorAction SilentlyContinue |
+       Where-Object { \$_.DisplayName -like 'WSL*Port*' } |
+       ForEach-Object { \$_.DisplayName }" 2>/dev/null | tr -d '\r')
+
+# ------------------------------------------------------------------ plan
+cmds=()
+notes=()
+for p in "${ports[@]}"; do
+    row=$(printf '%s\n' "$pp" | awk -v p="$p" '$1 == p { print; exit }')
+    if [ -z "$row" ]; then
+        cmds+=("netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=$p connectaddress=$wsl_ip connectport=$p")
+        notes+=("$p: forward 0.0.0.0:$p -> $wsl_ip:$p")
+    else
+        cur_addr=$(printf '%s' "$row" | awk '{print $2}')
+        cur_port=$(printf '%s' "$row" | awk '{print $3}')
+        if [ "$cur_addr" != "$wsl_ip" ] || [ "$cur_port" != "$p" ]; then
+            cmds+=("netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=$p")
+            cmds+=("netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=$p connectaddress=$wsl_ip connectport=$p")
+            notes+=("$p: repair stale forward ($cur_addr:$cur_port -> $wsl_ip:$p)")
+        fi
+    fi
+
+    if ! printf '%s\n' "$fw" | grep -qx -e "WSL Port $p" -e "WSL-Port-$p"; then
+        cmds+=("New-NetFirewallRule -DisplayName WSL-Port-$p -Direction Inbound -Protocol TCP -LocalPort $p -Action Allow -ErrorAction SilentlyContinue | Out-Null")
+        notes+=("$p: allow inbound TCP $p through the firewall")
+    fi
+done
+
+if [ ${#cmds[@]} -eq 0 ]; then
+    [ "$QUIET" -eq 1 ] || echo "wsl-port-open: nothing to do (${ports[*]} already reachable)"
+    exit 0
+fi
+
+if [ "$DRYRUN" -eq 1 ]; then
+    printf 'would change:\n'
+    printf '  %s\n' "${notes[@]}"
+    exit 0
+fi
+
+# ------------------------------------------------------------------ apply
+# One elevated shell for every change, so a range costs a single UAC prompt.
+# Every command is built from digits and fixed literals only -- no quoting, so
+# nothing can be mangled crossing the WSL/Windows argument boundary.
+joined=$(printf '%s; ' "${cmds[@]}")
+echo "wsl-port-open: asking Windows for Administrator to apply:"
+printf '  %s\n' "${notes[@]}"
+
+powershell.exe -NoProfile -Command \
+  "Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','$joined'" \
+  >/dev/null 2>&1
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo "wsl-port-open: elevation failed or was declined" >&2
+    exit 1
+fi
+
+# ------------------------------------------------------------------ verify
+pp2=$(netsh.exe interface portproxy show v4tov4 2>/dev/null | tr -d '\r' | awk '
+    $1 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && $2 ~ /^[0-9]+$/ { print $2 }')
+missing=()
+for p in "${ports[@]}"; do
+    printf '%s\n' "$pp2" | grep -qx "$p" || missing+=("$p")
+done
+if [ ${#missing[@]} -gt 0 ]; then
+    echo "wsl-port-open: still not forwarded: ${missing[*]}" >&2
+    exit 1
+fi
+[ "$QUIET" -eq 1 ] || echo "wsl-port-open: ok (${ports[*]})"
+exit 0

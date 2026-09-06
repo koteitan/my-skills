@@ -1,0 +1,35 @@
+#!/bin/bash
+# wsl-win-ip [-r]
+# Print the Windows host's LAN IPv4 address -- the one a phone on the same
+# network can reach. That is NOT the WSL address (172.x, a NAT'd VM-only
+# address) and NOT the WSL vEthernet address on the Windows side; it is the
+# address of the Windows adapter that owns the default route.
+#
+# Talking to Windows costs a few hundred ms, so the answer is cached. -r forces
+# a refresh. Prints nothing and exits 1 when the address cannot be determined.
+
+CACHE="/tmp/wsl-win-ip-${UID}.cache"
+TTL=300                            # seconds; a LAN address rarely moves
+
+if [ "$1" != "-r" ] && [ -s "$CACHE" ]; then
+    age=$(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || echo 0) ))
+    if [ "$age" -lt "$TTL" ]; then
+        cat "$CACHE"
+        exit 0
+    fi
+fi
+
+# The adapter with an IPv4 default gateway is the one facing the LAN. WSL's own
+# vEthernet has no gateway, so it drops out on its own.
+ip=$(powershell.exe -NoProfile -Command \
+      "Get-NetIPConfiguration | Where-Object { \$_.IPv4DefaultGateway -ne \$null } |
+       Select-Object -First 1 -ExpandProperty IPv4Address |
+       Select-Object -ExpandProperty IPAddress" 2>/dev/null | tr -d '\r' | head -n1)
+
+case "$ip" in
+    [0-9]*.[0-9]*.[0-9]*.[0-9]*) ;;
+    *) exit 1 ;;
+esac
+
+printf '%s\n' "$ip" > "$CACHE"
+printf '%s\n' "$ip"

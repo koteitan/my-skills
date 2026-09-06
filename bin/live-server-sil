@@ -2,8 +2,14 @@
 # live-server-sil [port]
 # Start live-server in the background and print a single clickable link.
 # Serves the current directory.
+#
+# The link is the Windows LAN address, not the WSL one, so it also works from a
+# phone on the same network. WSL2 is a NAT'd VM, so that needs a Windows-side
+# port forward and firewall rule; wsl-port-open adds them, which costs one UAC
+# prompt the first time a given port is used. Set LIVE_SERVER_NO_LAN=1 to skip
+# all of that and print the WSL-only address instead.
 
-IF=eno1
+IF=eth0
 
 PORT="${1:-8213}"
 
@@ -43,6 +49,19 @@ done
 
 URL="http://${IP}:${PORT}/"
 
+# Prefer the Windows LAN address so the printed link also works from a phone.
+# Registering the forward can fail (UAC declined, Windows unreachable); that is
+# not worth failing a server over, so keep the WSL URL when it does.
+lan_url() {
+    [ -n "$LIVE_SERVER_NO_LAN" ] && return 1
+    # stdout is captured by the caller, so its progress lines must go to stderr
+    wsl-port-open -q "$PORT" >&2 || return 1
+    local win_ip
+    win_ip=$(wsl-win-ip 2>/dev/null) || return 1
+    [ -z "$win_ip" ] && return 1
+    printf 'http://%s:%s/\n' "$win_ip" "$PORT"
+}
+
 # run detached; discard live-server's own output
 nohup npx live-server --quiet --no-browser --host="$IP" --port="$PORT" 9>&- >/dev/null 2>&1 &
 server_pid=$!
@@ -70,6 +89,10 @@ if [ "$listening" -ne 1 ]; then
 fi
 
 disown
+
+# Only now is the port really listening, which is when the forward is worth
+# registering.
+lan=$(lan_url) && URL="$lan"
 
 # one line, URL rendered as a clickable hyperlink (OSC 8)
 printf 'start at \033]8;;%s\033\\%s\033]8;;\033\\\n' "$URL" "$URL"

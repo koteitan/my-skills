@@ -60,9 +60,11 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 |-----------|------|
 | [claude-pushover](bin/claude-pushover) | Claude Code の会話要約を Pushover で通知（Stop フック想定） |
 | [pushover](bin/pushover) | Pushover API への薄い `curl` ラッパー |
-| [live-server-sil](bin/live-server-sil) | `live-server` を静かにバックグラウンド起動しクリック可能な URL を表示 |
+| [live-server-sil](bin/live-server-sil) | `live-server` を静かにバックグラウンド起動し、LAN の他端末からも開けるクリック可能な URL を表示 |
 | [live-server-list](bin/live-server-list) | 動作中の `live-server` を PID・URL・配信ディレクトリで一覧表示 |
 | [live-server-kill](bin/live-server-kill) | 動作中の `live-server` を停止（唯一のインスタンス、または port 指定） |
+| [wsl-port-open](bin/wsl-port-open) | WSL のポートを LAN から到達可能にする。Windows の portproxy とファイアウォール規則を追加、UAC はポートごとに 1 回 |
+| [wsl-win-ip](bin/wsl-win-ip) | Windows ホストの LAN IPv4 アドレスを表示（キャッシュ付き） |
 | [sessiondb](bin/sessiondb) | Claude Code セッション JSONL ログの SQLite + FTS5 インデックス構築と検索 |
 | [sessionmv](bin/sessionmv) | ディレクトリを Claude Code セッションごと移動。`--codex` で Codex の JSONL・状態メタデータにも対応 |
 | [newline](bin/newline) | ファイルの改行コード（CR / LF / CRLF）を判定 |

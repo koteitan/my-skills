@@ -60,9 +60,11 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 |--------|-------------|
 | [claude-pushover](bin/claude-pushover) | Send Claude Code conversation summary via Pushover (intended as a Stop hook) |
 | [pushover](bin/pushover) | Thin `curl` wrapper around the Pushover API |
-| [live-server-sil](bin/live-server-sil) | Start `live-server` silently in the background and print a clickable URL |
+| [live-server-sil](bin/live-server-sil) | Start `live-server` silently in the background and print a clickable URL that also works from other devices on the LAN |
 | [live-server-list](bin/live-server-list) | List running `live-server` instances: PID, URL, serving directory |
 | [live-server-kill](bin/live-server-kill) | Kill a running `live-server` (sole instance, or by port) |
+| [wsl-port-open](bin/wsl-port-open) | Make a WSL port reachable from the LAN: add the Windows portproxy and firewall rule, one UAC prompt per port |
+| [wsl-win-ip](bin/wsl-win-ip) | Print the Windows host's LAN IPv4 address, cached |
 | [sessiondb](bin/sessiondb) | Build and query a SQLite + FTS5 index over Claude Code session JSONL logs |
 | [sessionmv](bin/sessionmv) | Move a directory with its Claude Code sessions, or use `--codex` to rewrite Codex JSONL/state metadata |
 | [newline](bin/newline) | Detect CR / LF / CRLF line endings in files |
