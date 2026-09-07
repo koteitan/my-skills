@@ -1,15 +1,25 @@
 #!/bin/bash
 # statusLine command for Claude Code
 # Line 1: host:dir
-# Line 2: <m>ctx:[bar] 5h:[bar]>ETA w:[bar]>ETA <model> <effort>
+# Line 2: <m>ctx:[bar] pc 5h:[bar]>ETA w:[bar]>ETA <model> <effort>
 #
 # <m> is a short model tag in the leftmost column, so the current model is
 # readable without scanning to the end of the line:
 #   "o5 " opus-5   / "s5 " sonnet-5   / "f5 " fable-5
 #   "o51 " opus-5.1 / "s51 " sonnet-5.1 / "f51 " fable-5.1
 #   "" anything else
+# A "[1m]"/"[2m]" context-size suffix on the id is ignored, so the 1M variant
+# gets the same tag as the plain model.
 # Unknown models contribute nothing at all (not even a space), so the line
 # simply starts at "ctx:".
+#
+# pc is the upstream prompt-cache countdown. While the cache is warm a request
+# re-sends almost nothing; when it expires the whole conversation is re-sent and
+# prompt_cache.recache_tokens_if_cold input tokens are paid again. So:
+#   green  "pc:47m"     warm, more than $PC_WARN minutes left
+#   orange "pc:6m"      warm, $PC_WARN minutes or less -- the rebuild is near
+#   red    "pc:cold 103k"  already cold; 103k is what the next request re-sends
+#   absent prompt_cache -> nothing shown (no requests made yet)
 #
 # Each [bar] is a 10-char gauge:
 #   filled cell : fg=dark  color, bg=light color
@@ -35,17 +45,41 @@ input=$(cat)
 now=$(date +%s)
 
 host=$(hostname -s)
-dir=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // empty')
+
+# One jq for the whole payload. The status line is re-run on a timer, not only
+# when the user speaks, so a process per field would be a process per field on
+# every tick. Order matters: dir is the only free-text value, so it goes last,
+# where a newline inside a directory name can only truncate itself instead of
+# shifting every field after it.
+mapfile -t F < <(jq -r '
+  [ (.model.id                              // ""),
+    (.effort.level                          // ""),
+    (.context_window.used_percentage        // ""),
+    (.rate_limits.five_hour.used_percentage // ""),
+    (.rate_limits.seven_day.used_percentage // ""),
+    (.rate_limits.five_hour.resets_at       // ""),
+    (.rate_limits.seven_day.resets_at       // ""),
+    # warm is a real boolean, and the // operator swallows false as well as
+    # null, so ask for it explicitly: that keeps a cold cache distinguishable
+    # from no prompt_cache at all.
+    (.prompt_cache.warm | if . == null then "" else tostring end),
+    (.prompt_cache.expires_at               // ""),
+    (.prompt_cache.recache_tokens_if_cold   // ""),
+    (.workspace.current_dir // .cwd         // "")
+  ] | .[] | tostring' <<<"$input" 2>/dev/null)
+
+model_id=${F[0]}
+effort=${F[1]}
+ctx=${F[2]}
+five=${F[3]}
+week=${F[4]}
+fr=${F[5]}
+wr=${F[6]}
+pc_warm=${F[7]}
+pc_exp=${F[8]}
+pc_cold=${F[9]}
+dir=${F[10]}
 [ -z "$dir" ] && dir=$(pwd)
-
-model_id=$(echo "$input" | jq -r '.model.id // empty')
-effort=$(echo  "$input" | jq -r '.effort.level // empty')
-
-ctx=$(echo  "$input" | jq -r '.context_window.used_percentage        // empty')
-five=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
-week=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
-fr=$(echo   "$input" | jq -r '.rate_limits.five_hour.resets_at       // empty')
-wr=$(echo   "$input" | jq -r '.rate_limits.seven_day.resets_at       // empty')
 
 # ---------------------------------------------------------------- sample log
 # Format: <epoch> <five%> <week%> <five_resets_at> <week_resets_at>, "-" if absent
@@ -160,6 +194,30 @@ render_bar() {
   printf '%s\033[0m' "$out"
 }
 
+# ---------------------------------------------------------------- prompt cache
+PC_WARN=10                        # minutes left at which pc turns orange
+
+fmt_tok() {                       # 102885 -> "103k"
+  local t="$1"
+  if   (( t >= 1000000 )); then printf '%dM' $(( (t + 500000) / 1000000 ))
+  elif (( t >= 1000    )); then printf '%dk' $(( (t + 500) / 1000 ))
+  else                          printf '%d'  "$t"
+  fi
+}
+
+pc_disp=""
+if [ -n "$pc_warm" ]; then
+  if [ "$pc_warm" = "true" ] && [[ $pc_exp =~ ^[0-9]+$ ]] && (( pc_exp > now )); then
+    mins=$(( (pc_exp - now + 59) / 60 ))     # round up: "1m" until it really goes
+    if (( mins > PC_WARN )); then pc_col=32; else pc_col=33; fi
+    pc_disp=$(printf ' \033[01;%dmpc:%dm\033[00m' "$pc_col" "$mins")
+  elif [[ $pc_cold =~ ^[0-9]+$ ]] && (( pc_cold > 0 )); then
+    pc_disp=$(printf ' \033[01;31mpc:cold %s\033[00m' "$(fmt_tok "$pc_cold")")
+  else
+    pc_disp=$(printf ' \033[01;31mpc:cold\033[00m')
+  fi
+fi
+
 ctx_bar=$(render_bar "$ctx")
 five_bar=$(render_bar "$five")
 week_bar=$(render_bar "$week")
@@ -188,8 +246,14 @@ model_display=""
 # "f51") and must be listed before the base "-5-*" patterns, which would
 # otherwise swallow them. The dated variants (claude-opus-5-20260101) are
 # matched too, so the tag does not silently vanish if the id gains a date.
+# The 1M-context variant appends a "[1m]" suffix to the id, so this session's
+# id is "claude-opus-5[1m]", which matches none of the patterns below. Claude
+# Code itself strips /\[(1|2)m\]$/i before every id comparison, so do the same
+# here: cut everything from the first "[" onward.
+model_base=${model_id%%"["*}
+
 model_short=""
-case "$model_id" in
+case "$model_base" in
   claude-opus-5-1|claude-opus-5-1-*)     model_short='o51' ;;
   claude-sonnet-5-1|claude-sonnet-5-1-*) model_short='s51' ;;
   claude-fable-5-1|claude-fable-5-1-*)   model_short='f51' ;;
@@ -205,7 +269,7 @@ effort_display=""
 [ -n "$effort" ] && effort_display=$(printf ' \033[01;35m%s\033[00m' "$effort")
 
 printf '\033[01;34m%s\033[00m:\033[01;33m%s\033[00m\n' "$host" "$dir"
-printf '%sctx:[%s] 5h:[%s]%s w:[%s]%s %s%s' \
+printf '%sctx:[%s]%s 5h:[%s]%s w:[%s]%s %s%s' \
   "$model_short_display" \
-  "$ctx_bar" "$five_bar" "$five_eta_disp" "$week_bar" "$week_eta_disp" \
+  "$ctx_bar" "$pc_disp" "$five_bar" "$five_eta_disp" "$week_bar" "$week_eta_disp" \
   "$model_display" "$effort_display"

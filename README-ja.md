@@ -75,14 +75,21 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 
 [statusline-command.sh](statusline-command.sh) は2行のステータスラインを描画します。
 1行目は `host:dir`、2行目はコンテキストウィンドウと 5時間枠 / 週次の rate limit の
-ゲージ（それぞれ上限到達予測つき）、モデル名、effort です。あわせて rate limit の
-読み取り値を `~/.claude/statusline-usage.log` に追記しており、これが
-[check-usage](skills/check-usage/) スキルの読むデータになります。
+ゲージ（それぞれ上限到達予測つき）、prompt cache の残り時間、モデル名、effort です。
+あわせて rate limit の読み取り値を `~/.claude/statusline-usage.log` に追記しており、
+これが [check-usage](skills/check-usage/) スキルの読むデータになります。
 
-`~/.claude/settings.json` の `statusLine.command` から参照します：
+prompt cache の欄は、キャッシュが生きている間は `pc:47m`、切れた後は
+`pc:cold 103k` と表示します。103k は次のリクエストで送り直しになる入力量です。
+減るのはセッションを放置している間だけなので、`refreshInterval` を設定しないと
+再描画されず値が動きません：
 
 ```json
-"statusLine": { "type": "command", "command": "bash /home/<user>/.claude/statusline-command.sh" }
+"statusLine": {
+  "type": "command",
+  "command": "bash /home/<user>/.claude/statusline-command.sh",
+  "refreshInterval": 300
+}
 ```
 
 ## ライセンス

@@ -75,14 +75,22 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 
 [statusline-command.sh](statusline-command.sh) draws the two-line status line:
 `host:dir` on top, then gauges for the context window and the 5-hour / weekly rate
-limits, each with an exhaustion forecast, plus the model and effort level. It also
-appends every rate-limit reading to `~/.claude/statusline-usage.log`, which is what
-the [check-usage](skills/check-usage/) skill reads.
+limits, each with an exhaustion forecast, a prompt-cache countdown, plus the model
+and effort level. It also appends every rate-limit reading to
+`~/.claude/statusline-usage.log`, which is what the
+[check-usage](skills/check-usage/) skill reads.
 
-Point `statusLine.command` in `~/.claude/settings.json` at it:
+The prompt-cache field reads `pc:47m` while the cache is warm and `pc:cold 103k`
+once it has expired, where 103k is the input the next request has to send again.
+It only counts down while the session sits idle, so `refreshInterval` has to be
+set or the line is never redrawn to show it:
 
 ```json
-"statusLine": { "type": "command", "command": "bash /home/<user>/.claude/statusline-command.sh" }
+"statusLine": {
+  "type": "command",
+  "command": "bash /home/<user>/.claude/statusline-command.sh",
+  "refreshInterval": 300
+}
 ```
 
 ## License
