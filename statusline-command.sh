@@ -1,7 +1,7 @@
 #!/bin/bash
 # statusLine command for Claude Code
 # Line 1: host:dir
-# Line 2: <m><e> ctx:[bar] pc 5h:[bar]>ETA w:[bar]>ETA <model> <effort>
+# Line 2: <m><e> ctx:[bar] 5h:[bar]>ETA w:[bar]>ETA <model> <effort>
 #
 # <m><e> is a short model+effort tag in the leftmost column, so the current
 # model and effort are readable without scanning to the end of the line,
@@ -19,20 +19,12 @@
 # When both are empty the tag contributes nothing at all (not even a space),
 # so the line simply starts at "ctx:".
 #
-# pc is the upstream prompt-cache countdown. While the cache is warm a request
-# re-sends almost nothing; when it expires the whole conversation is re-sent and
-# prompt_cache.recache_tokens_if_cold input tokens are paid again. So:
-#   green  "pc:47m"     warm, more than $PC_WARN minutes left
-#   orange "pc:6m"      warm, $PC_WARN minutes or less -- the rebuild is near
-#   red    "pc:cold 103k"  already cold; 103k is what the next request re-sends
-#   absent prompt_cache -> nothing shown (no requests made yet)
-#
-# Each [bar] is a 10-char gauge:
+# Each [bar] is a 5-char gauge:
 #   filled cell : fg=dark  color, bg=light color
 #   empty  cell : fg=light color, bg=dark  color
 #   hue: <80% green, 80..<100% orange, 100% red
-#   text "xxx%": <50% written from leftmost empty cell,
-#                >=50% written ending at rightmost filled cell
+#   text "xxx%": inside the filled cells when it fits there,
+#                else right-aligned inside the empty cells
 #   absent rate_limits -> gray empty bar, no text
 #
 # ETA (exhaustion forecast, wall-clock based):
@@ -52,9 +44,9 @@ now=$(date +%s)
 
 host=$(hostname -s)
 
-# One jq for the whole payload. The status line is re-run on a timer, not only
-# when the user speaks, so a process per field would be a process per field on
-# every tick. Order matters: dir is the only free-text value, so it goes last,
+# One jq for the whole payload. The status line is redrawn on every update, so
+# a process per field would be a process per field on every redraw. Order
+# matters: dir is the only free-text value, so it goes last,
 # where a newline inside a directory name can only truncate itself instead of
 # shifting every field after it.
 mapfile -t F < <(jq -r '
@@ -65,12 +57,6 @@ mapfile -t F < <(jq -r '
     (.rate_limits.seven_day.used_percentage // ""),
     (.rate_limits.five_hour.resets_at       // ""),
     (.rate_limits.seven_day.resets_at       // ""),
-    # warm is a real boolean, and the // operator swallows false as well as
-    # null, so ask for it explicitly: that keeps a cold cache distinguishable
-    # from no prompt_cache at all.
-    (.prompt_cache.warm | if . == null then "" else tostring end),
-    (.prompt_cache.expires_at               // ""),
-    (.prompt_cache.recache_tokens_if_cold   // ""),
     (.workspace.current_dir // .cwd         // "")
   ] | .[] | tostring' <<<"$input" 2>/dev/null)
 
@@ -81,10 +67,7 @@ five=${F[3]}
 week=${F[4]}
 fr=${F[5]}
 wr=${F[6]}
-pc_warm=${F[7]}
-pc_exp=${F[8]}
-pc_cold=${F[9]}
-dir=${F[10]}
+dir=${F[7]}
 [ -z "$dir" ] && dir=$(pwd)
 
 # ---------------------------------------------------------------- sample log
@@ -144,10 +127,10 @@ fmt_eta() {
 }
 
 # ---------------------------------------------------------------- rendering
-# Render a 10-char colored gauge for a percentage (integer/float) or empty.
+# Render a 5-char colored gauge for a percentage (integer/float) or empty.
 render_bar() {
   local val="$1"
-  local width=10
+  local width=5
   local out="" i
 
   # absent -> gray empty bar, no text
@@ -171,15 +154,15 @@ render_bar() {
   else                        dark=88;  light=210   # red
   fi
 
-  local filled=$(( p / 10 ))   # floor: only 100% fills all 10
+  local filled=$(( p * width / 100 ))   # floor: only 100% fills every cell
 
   local text="${p}%"               # integer percent (source resolution is 1)
   local L=${#text}
   local start
-  if [ "$p" -lt 50 ]; then
-    start=$(( width - L ))         # end at rightmost empty cell
+  if (( filled >= L )); then
+    start=0                        # inside the filled cells
   else
-    start=0                        # start at leftmost filled cell
+    start=$(( width - L ))         # right-aligned inside the empty cells
   fi
   (( start < 0 ))          && start=0
   (( start + L > width ))  && start=$(( width - L ))
@@ -199,30 +182,6 @@ render_bar() {
   done
   printf '%s\033[0m' "$out"
 }
-
-# ---------------------------------------------------------------- prompt cache
-PC_WARN=10                        # minutes left at which pc turns orange
-
-fmt_tok() {                       # 102885 -> "103k"
-  local t="$1"
-  if   (( t >= 1000000 )); then printf '%dM' $(( (t + 500000) / 1000000 ))
-  elif (( t >= 1000    )); then printf '%dk' $(( (t + 500) / 1000 ))
-  else                          printf '%d'  "$t"
-  fi
-}
-
-pc_disp=""
-if [ -n "$pc_warm" ]; then
-  if [ "$pc_warm" = "true" ] && [[ $pc_exp =~ ^[0-9]+$ ]] && (( pc_exp > now )); then
-    mins=$(( (pc_exp - now + 59) / 60 ))     # round up: "1m" until it really goes
-    if (( mins > PC_WARN )); then pc_col=32; else pc_col=33; fi
-    pc_disp=$(printf ' \033[01;%dmpc:%dm\033[00m' "$pc_col" "$mins")
-  elif [[ $pc_cold =~ ^[0-9]+$ ]] && (( pc_cold > 0 )); then
-    pc_disp=$(printf ' \033[01;31mpc:cold %s\033[00m' "$(fmt_tok "$pc_cold")")
-  else
-    pc_disp=$(printf ' \033[01;31mpc:cold\033[00m')
-  fi
-fi
 
 ctx_bar=$(render_bar "$ctx")
 five_bar=$(render_bar "$five")
@@ -288,7 +247,7 @@ effort_display=""
 [ -n "$effort" ] && effort_display=$(printf ' \033[01;35m%s\033[00m' "$effort")
 
 printf '\033[01;34m%s\033[00m:\033[01;33m%s\033[00m\n' "$host" "$dir"
-printf '%sctx:[%s]%s 5h:[%s]%s w:[%s]%s %s%s' \
+printf '%sctx:[%s] 5h:[%s]%s w:[%s]%s %s%s' \
   "$model_short_display" \
-  "$ctx_bar" "$pc_disp" "$five_bar" "$five_eta_disp" "$week_bar" "$week_eta_disp" \
+  "$ctx_bar" "$five_bar" "$five_eta_disp" "$week_bar" "$week_eta_disp" \
   "$model_display" "$effort_display"

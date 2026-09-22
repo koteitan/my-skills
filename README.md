@@ -41,7 +41,7 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [mermaid](skills/mermaid/) | Rules for drawing Mermaid diagrams: no node fills, no diamonds, short captions |
 | [manim-tts](skills/manim-tts/) | Pitfalls of building narrated explainer videos with manim + VOICEVOX TTS: cache-dropped audio, mobjects that reappear, LaTeX failures on Japanese |
 | [my-github-md-rule](skills/my-github-md-rule/) | Rules for generating bilingual (EN/JA) markdown documents on GitHub |
-| [github-math-check](skills/github-math-check/) | Verify that Markdown math survives GitHub's own transformations, by rendering the exact string GitHub hands to the browser |
+| [github-math-check](skills/github-math-check/) | Verify that Markdown math survives GitHub's own transformations, by rendering the exact string GitHub hands to the browser; also finds plain-text formulas whose `*` and `_` turn into italics |
 | [nostr](skills/nostr/) | Nostr hub: relay discovery, DIY NIP-19 bech32 entities, CLI relay debugging, and the standard web-app stack |
 | [webapp-defaults](skills/webapp-defaults/) | Defaults for a scratch-built vanilla page: dark mode on, top-right hamburger menu, UI state kept in localStorage |
 | [sessiondb](skills/sessiondb/) | SQLite + FTS5 full-text search over Claude Code session JSONL logs |
@@ -75,21 +75,16 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 
 [statusline-command.sh](statusline-command.sh) draws the two-line status line:
 `host:dir` on top, then gauges for the context window and the 5-hour / weekly rate
-limits, each with an exhaustion forecast, a prompt-cache countdown, plus the model
-and effort level. It also appends every rate-limit reading to
-`~/.claude/statusline-usage.log`, which is what the
-[check-usage](skills/check-usage/) skill reads.
+limits, each with an exhaustion forecast, plus the model and effort level. It also
+appends every rate-limit reading to `~/.claude/statusline-usage.log`, which is what
+the [check-usage](skills/check-usage/) skill reads.
 
-The prompt-cache field reads `pc:47m` while the cache is warm and `pc:cold 103k`
-once it has expired, where 103k is the input the next request has to send again.
-It only counts down while the session sits idle, so `refreshInterval` has to be
-set or the line is never redrawn to show it:
+Register it in `~/.claude/settings.json`:
 
 ```json
 "statusLine": {
   "type": "command",
-  "command": "bash /home/<user>/.claude/statusline-command.sh",
-  "refreshInterval": 300
+  "command": "bash /home/<user>/.claude/statusline-command.sh"
 }
 ```
 

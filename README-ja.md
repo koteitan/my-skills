@@ -41,7 +41,7 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | [mermaid](skills/mermaid/) | Mermaid 図のルール：ノードに背景色を使わない・ひし形を使わない・キャプションは短く |
 | [manim-tts](skills/manim-tts/) | manim + VOICEVOX で音声付き解説動画を作るときの罠：キャッシュで音声が落ちる・消したはずの図形が復活する・日本語で LaTeX が落ちる |
 | [my-github-md-rule](skills/my-github-md-rule/) | GitHub 上で日英バイリンガルの markdown ドキュメントを生成するルール |
-| [github-math-check](skills/github-math-check/) | Markdown の数式が GitHub 側の変換を経ても壊れないか、ブラウザに渡る文字列そのものを描画して検証 |
+| [github-math-check](skills/github-math-check/) | Markdown の数式が GitHub 側の変換を経ても壊れないか、ブラウザに渡る文字列そのものを描画して検証。数式ではない地の文の式で `*` と `_` が斜体になる箇所も探す |
 | [nostr](skills/nostr/) | Nostr 作業の集約：リレー探索・NIP-19 bech32 の自前実装・CLI でのリレー調査・Web アプリの標準構成 |
 | [webapp-defaults](skills/webapp-defaults/) | 素の Web ページを作るときの既定：ダークモード ON・右上ハンバーガーメニュー・UI 状態を localStorage に保存 |
 | [sessiondb](skills/sessiondb/) | Claude Code セッション JSONL ログを SQLite + FTS5 で全文検索 |
@@ -75,20 +75,16 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 
 [statusline-command.sh](statusline-command.sh) は2行のステータスラインを描画します。
 1行目は `host:dir`、2行目はコンテキストウィンドウと 5時間枠 / 週次の rate limit の
-ゲージ（それぞれ上限到達予測つき）、prompt cache の残り時間、モデル名、effort です。
+ゲージ（それぞれ上限到達予測つき）、モデル名、effort です。
 あわせて rate limit の読み取り値を `~/.claude/statusline-usage.log` に追記しており、
 これが [check-usage](skills/check-usage/) スキルの読むデータになります。
 
-prompt cache の欄は、キャッシュが生きている間は `pc:47m`、切れた後は
-`pc:cold 103k` と表示します。103k は次のリクエストで送り直しになる入力量です。
-減るのはセッションを放置している間だけなので、`refreshInterval` を設定しないと
-再描画されず値が動きません：
+`~/.claude/settings.json` に次のように登録します：
 
 ```json
 "statusLine": {
   "type": "command",
-  "command": "bash /home/<user>/.claude/statusline-command.sh",
-  "refreshInterval": 300
+  "command": "bash /home/<user>/.claude/statusline-command.sh"
 }
 ```
 
