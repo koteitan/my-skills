@@ -1,17 +1,23 @@
 #!/bin/bash
 # statusLine command for Claude Code
 # Line 1: host:dir
-# Line 2: <m>ctx:[bar] pc 5h:[bar]>ETA w:[bar]>ETA <model> <effort>
+# Line 2: <m><e> ctx:[bar] pc 5h:[bar]>ETA w:[bar]>ETA <model> <effort>
 #
-# <m> is a short model tag in the leftmost column, so the current model is
-# readable without scanning to the end of the line:
-#   "o5 " opus-5   / "s5 " sonnet-5   / "f5 " fable-5
-#   "o51 " opus-5.1 / "s51 " sonnet-5.1 / "f51 " fable-5.1
+# <m><e> is a short model+effort tag in the leftmost column, so the current
+# model and effort are readable without scanning to the end of the line,
+# e.g. "o55h ctx:[".
+# <m>:
+#   "o5"  opus-5   / "s5"  sonnet-5   / "f5"  fable-5
+#   "o51" opus-5.1 / "s51" sonnet-5.1 / "f51" fable-5.1
+#   "o55" opus-5.5
 #   "" anything else
 # A "[1m]"/"[2m]" context-size suffix on the id is ignored, so the 1M variant
 # gets the same tag as the plain model.
-# Unknown models contribute nothing at all (not even a space), so the line
-# simply starts at "ctx:".
+# <e>:
+#   "l" low / "md" medium / "h" high / "x" xhigh / "mx" max
+#   any other level is shown as is; no level -> ""
+# When both are empty the tag contributes nothing at all (not even a space),
+# so the line simply starts at "ctx:".
 #
 # pc is the upstream prompt-cache countdown. While the cache is warm a request
 # re-sends almost nothing; when it expires the whole conversation is re-sent and
@@ -254,6 +260,7 @@ model_base=${model_id%%"["*}
 
 model_short=""
 case "$model_base" in
+  claude-opus-5-5|claude-opus-5-5-*)     model_short='o55' ;;
   claude-opus-5-1|claude-opus-5-1-*)     model_short='o51' ;;
   claude-sonnet-5-1|claude-sonnet-5-1-*) model_short='s51' ;;
   claude-fable-5-1|claude-fable-5-1-*)   model_short='f51' ;;
@@ -261,9 +268,21 @@ case "$model_base" in
   claude-sonnet-5|claude-sonnet-5-*)     model_short='s5'  ;;
   claude-fable-5|claude-fable-5-*)       model_short='f5'  ;;
 esac
+case "$effort" in
+  low)    effort_short='l'  ;;
+  medium) effort_short='md' ;;
+  high)   effort_short='h'  ;;
+  xhigh)  effort_short='x'  ;;
+  max)    effort_short='mx' ;;
+  *)      effort_short=$effort ;;
+esac
+
+# Model in cyan, effort in magenta (the same colors as the full names at the
+# end of the line), then one space before "ctx:".
 model_short_display=""
-[ -n "$model_short" ] && \
-  model_short_display=$(printf '\033[01;36m%s\033[00m ' "$model_short")
+[ -n "$model_short$effort_short" ] && \
+  model_short_display=$(printf '\033[01;36m%s\033[01;35m%s\033[00m ' \
+    "$model_short" "$effort_short")
 
 effort_display=""
 [ -n "$effort" ] && effort_display=$(printf ' \033[01;35m%s\033[00m' "$effort")
