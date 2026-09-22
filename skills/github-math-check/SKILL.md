@@ -1,6 +1,6 @@
 ---
 name: github-math-check
-description: Verify that math in a Markdown file actually renders on GitHub. Use when a formula renders locally (KaTeX/MathJax/VS Code) but breaks on github.com — "Missing \end{aligned}", vanished braces, stray commas — or before publishing math-heavy Markdown. Decodes the exact string GitHub hands to its client-side renderer, so the check is measurement, not guesswork.
+description: Verify that math in a Markdown file actually renders on GitHub. Use when a formula renders locally (KaTeX/MathJax/VS Code) but breaks on github.com — "Missing \end{aligned}", vanished braces, stray commas — or before publishing math-heavy Markdown. Decodes the exact string GitHub hands to its client-side renderer, so the check is measurement, not guesswork. Also covers formulas written as plain text (no math renderer, e.g. generated tables of ordinal notations), where `*` and `_` turn into italics.
 ---
 
 # github-math-check
@@ -40,6 +40,44 @@ Counting catches both silently: when `check-github.js` reports **fewer** formula
 `check-local.js`, the difference is unrendered math, not a false alarm — the page shows no
 error, just raw LaTeX. Diff the two formula lists to find which ones. (Measured 2026-08 on
 one file: 8 lost to list items, 5 to footnotes; both were invisible to the error count.)
+
+## Plain-text formulas: `*` and `_` turn into italics
+
+Not every formula goes through the math renderer. Text such as `psi(W^(W*w))`, `a*b` or
+`f(_a)` written outside math and outside code — typically a generated table of notations —
+is plain Markdown, and a pair of `*` or `_` becomes emphasis: the text between them is set
+in italics and the delimiters disappear. Nothing reports an error. Measured with method 1,
+2026-09:
+
+| written (plain text) | GitHub renders | effect |
+|---|---|---|
+| `psi(W^(W*w)) = psi(psi_1(W^2*w))` | `psi(W^(W<em>w)) = psi(psi_1(W^2</em>w))` | **italics, both `*` vanish** |
+| `psi(W_2+W*w)` | unchanged | fine while it is the only `*` in the cell |
+| `f(_a) + g(b_)`, `(_c_)` | `f(<em>a) + g(b</em>)`, `(<em>c</em>)` | `_` next to `(` `)` or a space opens and closes emphasis |
+| `psi_1(W_2) + W_w + psi_W_(w+1)(x)` | unchanged | `_` between two letters or digits never does |
+| `*a` in one cell, `b*` in the next | unchanged | a table cell is parsed on its own |
+| `` `psi(W^(W*w)) = …` `` | `<code>` | ✅ code span |
+| `psi(W^(W\*w)) = psi(psi_1(W^2\*w))` | `*` kept | ✅ escaped, but every `*` and `_` needs it |
+
+So:
+
+* put formulas that are not math in a code span; inside a table cell a `|` still has to be
+  written `\|`
+* when the file is generated, fix the generator and regenerate — not the output
+
+`scripts/check-emphasis.js` finds them. For every table cell (or line) it reports a `*` or
+`_` that can open emphasis followed by one that can close it, by the CommonMark flanking
+rules. Code spans, fences, `\*` `\_` and `**bold**` runs are skipped; emphasis across a line
+break within a paragraph is not detected.
+
+```bash
+node ~/.claude/skills/github-math-check/scripts/check-emphasis.js docs
+# docs/table.md:5: | A star pair | psi(W^(W*w)) = psi(psi_1(W^2*w)) |
+# docs/table.md:10: | F _ after ( | f(_a) + g(b_) |
+# docs/table.md:15: H paragraph: W*w + W*2 and a_(b) + (_c_)
+# files : 1
+# errors: 3
+```
 
 ## Scripts (start here)
 
