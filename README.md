@@ -36,6 +36,7 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | Skill | Description |
 |-------|-------------|
 | [compact-unfreeze](skills/compact-unfreeze/) | Work around the Remote Control + `/compact` frozen-input bug by arming a background Monitor to flush the stuck queue |
+| [heart-beat](skills/heart-beat/) | Say `heart-beat X分`: work autonomously until the proof is complete, with a CronCreate heartbeat so the session never stays idle longer than X minutes |
 | [autonomy-stat](skills/autonomy-stat/) | Measure an agent's per-turn self-running time from a session JSONL and render it as an interactive HTML chart (model-work vs tool-wait) |
 | [check-usage](skills/check-usage/) | Report the 5-hour and weekly rate-limit state: percent used, reset time, and the exhaustion forecast at the current pace |
 | [mermaid](skills/mermaid/) | Rules for drawing Mermaid diagrams: no node fills, no diamonds, short captions |

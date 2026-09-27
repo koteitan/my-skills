@@ -36,6 +36,7 @@ ln -s "$PWD/statusline-command.sh" ~/.claude/statusline-command.sh
 | スキル | 説明 |
 |--------|------|
 | [compact-unfreeze](skills/compact-unfreeze/) | Remote Control ＋ `/compact` の入力フリーズバグを、バックグラウンド Monitor の発火でキューをフラッシュして回避 |
+| [heart-beat](skills/heart-beat/) | `heart-beat X分` と言うと、証明完成まで自律的に作業を続ける。CronCreate のハートビートで X 分以上アイドルにしない |
 | [autonomy-stat](skills/autonomy-stat/) | エージェントの1ターンあたりの自走時間をセッション JSONL から算出し、インタラクティブな HTML グラフ（モデル稼働 vs tool待ち）として描画 |
 | [check-usage](skills/check-usage/) | 5時間枠と週次の rate limit の状態を報告：使用率・リセット時刻・現ペースでの上限到達予測 |
 | [mermaid](skills/mermaid/) | Mermaid 図のルール：ノードに背景色を使わない・ひし形を使わない・キャプションは短く |
